@@ -1,7 +1,6 @@
 using UnityEngine;
 
-public class IstanbulCityGenerator :
-    MonoBehaviour
+public class IstanbulCityGenerator : MonoBehaviour
 {
     // =========================================================
     // OSM
@@ -22,7 +21,7 @@ public class IstanbulCityGenerator :
     private Material roadMaterial;
 
     // =========================================================
-    // FACADE
+    // BUILDING MATERIALS
     // =========================================================
 
     [Header("Building - Facade Materials")]
@@ -40,8 +39,7 @@ public class IstanbulCityGenerator :
     [Header("Building - Glass Materials")]
 
     [Tooltip(
-        "Her bina için bir cam tipi seçilir. " +
-        "Ayný binadaki pencereler ayný cam materyalini kullanýr."
+        "Her bina bu listeden bir cam materyali seçer."
     )]
     [SerializeField]
     private Material[] glassMaterials;
@@ -54,7 +52,7 @@ public class IstanbulCityGenerator :
 
     [Tooltip(
         "Dükkanlarda kullanýlacak materyaller. " +
-        "Bir binada maksimum 3 farklý dükkan materyali kullanýlýr."
+        "Bir bina maksimum 3 farklý shop materyali kullanýr."
     )]
     [SerializeField]
     private Material[] shopMaterials;
@@ -66,11 +64,23 @@ public class IstanbulCityGenerator :
     [Header("Building - Balcony Materials")]
 
     [Tooltip(
-        "Balkon slab ve korkuluklarýnda kullanýlacak materyaller. " +
-        "Bir binada maksimum 2 farklý balkon materyali kullanýlýr."
+        "Balkonlarda kullanýlacak materyaller. " +
+        "Bir bina maksimum 2 farklý balkon materyali kullanýr."
     )]
     [SerializeField]
     private Material[] balconyMaterials;
+
+    // =========================================================
+    // ROOF
+    // =========================================================
+
+    [Header("Building - Roof Materials")]
+
+    [Tooltip(
+        "Düz ve eðimli çatýlarda kullanýlacak materyaller."
+    )]
+    [SerializeField]
+    private Material[] roofMaterials;
 
     // =========================================================
     // GENERATION
@@ -87,11 +97,10 @@ public class IstanbulCityGenerator :
         true;
 
     // =========================================================
-    // ROOTS
+    // PARENTS
     // =========================================================
 
     private Transform roadsParent;
-
     private Transform buildingsParent;
 
     // =========================================================
@@ -112,10 +121,6 @@ public class IstanbulCityGenerator :
 
         Clear();
 
-        // =====================================================
-        // PARSE
-        // =====================================================
-
         OSMMapData map =
             OSMParser.Parse(
                 osmFile.text
@@ -130,15 +135,7 @@ public class IstanbulCityGenerator :
             return;
         }
 
-        // =====================================================
-        // ROOTS
-        // =====================================================
-
         CreateParents();
-
-        // =====================================================
-        // ROAD GENERATOR
-        // =====================================================
 
         OSMRoadGenerator roadGenerator =
             new OSMRoadGenerator(
@@ -146,22 +143,15 @@ public class IstanbulCityGenerator :
                 roadMaterial
             );
 
-        // =====================================================
-        // BUILDING GENERATOR
-        // =====================================================
-
         OSMBuildingGenerator buildingGenerator =
             new OSMBuildingGenerator(
                 buildingsParent,
                 buildingMaterials,
                 glassMaterials,
                 shopMaterials,
-                balconyMaterials
+                balconyMaterials,
+                roofMaterials
             );
-
-        // =====================================================
-        // WAYS
-        // =====================================================
 
         foreach (OSMWay way
                  in map.ways)
@@ -189,36 +179,36 @@ public class IstanbulCityGenerator :
     }
 
     // =========================================================
-    // CREATE ROOTS
+    // CREATE PARENTS
     // =========================================================
 
     private void CreateParents()
     {
-        GameObject roads =
+        GameObject roadsObject =
             new GameObject(
                 "Roads"
             );
 
-        roads.transform.SetParent(
+        roadsObject.transform.SetParent(
             transform,
             false
         );
 
         roadsParent =
-            roads.transform;
+            roadsObject.transform;
 
-        GameObject buildings =
+        GameObject buildingsObject =
             new GameObject(
                 "Buildings"
             );
 
-        buildings.transform.SetParent(
+        buildingsObject.transform.SetParent(
             transform,
             false
         );
 
         buildingsParent =
-            buildings.transform;
+            buildingsObject.transform;
     }
 
     // =========================================================
@@ -252,11 +242,8 @@ public class IstanbulCityGenerator :
             );
         }
 
-        roadsParent =
-            null;
-
-        buildingsParent =
-            null;
+        roadsParent = null;
+        buildingsParent = null;
     }
 
     // =========================================================

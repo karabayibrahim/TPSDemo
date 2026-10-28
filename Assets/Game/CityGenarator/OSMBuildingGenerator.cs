@@ -12,9 +12,10 @@ public class OSMBuildingGenerator
     private readonly Material[] glassMaterials;
     private readonly Material[] shopMaterials;
     private readonly Material[] balconyMaterials;
+    private readonly Material[] roofMaterials;
 
     // =========================================================
-    // GLOBAL
+    // GENERAL
     // =========================================================
 
     private const float FloorHeight = 3f;
@@ -26,17 +27,17 @@ public class OSMBuildingGenerator
     private const int MaxBalconyMaterialVariantsPerBuilding = 2;
 
     // =========================================================
-    // BALCONY GEOMETRY
+    // BALCONY
     // =========================================================
 
     private const float BalconyDepth = 0.85f;
     private const float BalconyThickness = 0.12f;
 
-    private const float RailHeight = 1.0f;
+    private const float RailHeight = 1f;
     private const float RailThickness = 0.06f;
 
     // =========================================================
-    // SURFACE
+    // TYPES
     // =========================================================
 
     private enum SurfaceType
@@ -46,10 +47,6 @@ public class OSMBuildingGenerator
         Shop
     }
 
-    // =========================================================
-    // BUILDING ARCHETYPE
-    // =========================================================
-
     private enum BuildingArchetype
     {
         ClassicResidential,
@@ -57,6 +54,16 @@ public class OSMBuildingGenerator
         MixedUse,
         Office,
         GlassPlaza
+    }
+
+    private enum RoofType
+    {
+        Flat,
+        Gabled,
+        Hipped,
+        Pyramidal,
+        Skillion,
+        Mansard
     }
 
     // =========================================================
@@ -84,7 +91,6 @@ public class OSMBuildingGenerator
         public float entranceHeight;
 
         public bool allowBalcony;
-
         public float balconyChance;
         public float balconyMaxWidth;
 
@@ -116,7 +122,8 @@ public class OSMBuildingGenerator
         Material[] facadeMaterials,
         Material[] glassMaterials,
         Material[] shopMaterials,
-        Material[] balconyMaterials)
+        Material[] balconyMaterials,
+        Material[] roofMaterials)
     {
         this.parent = parent;
 
@@ -124,6 +131,7 @@ public class OSMBuildingGenerator
         this.glassMaterials = glassMaterials;
         this.shopMaterials = shopMaterials;
         this.balconyMaterials = balconyMaterials;
+        this.roofMaterials = roofMaterials;
     }
 
     // =========================================================
@@ -143,7 +151,7 @@ public class OSMBuildingGenerator
             return;
         }
 
-        // Þimdilik sadece kapalý OSM building way.
+        // Þimdilik kapalý OSM way.
         if (way.nodeIds[0] !=
             way.nodeIds[way.nodeIds.Count - 1])
         {
@@ -178,11 +186,10 @@ public class OSMBuildingGenerator
         if (footprint.Count < 4)
             return;
 
-        // Son node ilk node'un tekrarýysa kaldýr.
+        // Kapalý way'in tekrarlanan son noktasýný kaldýr.
         if (Vector3.Distance(
                 footprint[0],
-                footprint[footprint.Count - 1])
-            < 0.1f)
+                footprint[footprint.Count - 1]) < 0.1f)
         {
             footprint.RemoveAt(
                 footprint.Count - 1
@@ -197,7 +204,7 @@ public class OSMBuildingGenerator
         if (footprint.Count < 3)
             return;
 
-        // Polygon CCW olsun.
+        // CCW standardý.
         if (SignedArea(footprint) < 0f)
         {
             footprint.Reverse();
@@ -215,12 +222,36 @@ public class OSMBuildingGenerator
                 floorCount
             );
 
+        RoofType roofType =
+            SelectRoofType(
+                way,
+                style,
+                footprint
+            );
+
+        float roofHeight =
+            GetRoofHeight(
+                way,
+                footprint,
+                roofType
+            );
+
+        int roofMaterialIndex =
+            GetRoofMaterialIndex(
+                way,
+                way.id,
+                roofType
+            );
+
         CreateBuilding(
             footprint,
             height,
             floorCount,
             way.id,
-            style
+            style,
+            roofType,
+            roofHeight,
+            roofMaterialIndex
         );
     }
 
@@ -233,7 +264,10 @@ public class OSMBuildingGenerator
         float height,
         int floorCount,
         long osmId,
-        BuildingStyle style)
+        BuildingStyle style,
+        RoofType roofType,
+        float roofHeight,
+        int roofMaterialIndex)
     {
         GameObject building =
             new GameObject(
@@ -255,13 +289,24 @@ public class OSMBuildingGenerator
         info.osmId = osmId;
         info.floorCount = floorCount;
         info.height = height;
-        info.styleName = style.styleName;
+
+        info.styleName =
+            style.styleName;
+
+        info.roofType =
+            roofType.ToString();
+
+        info.roofHeight =
+            roofHeight;
+
+        info.roofMaterialIndex =
+            roofMaterialIndex;
 
         info.footprint =
             footprint.ToArray();
 
         // =====================================================
-        // MAIN MATERIALS
+        // MATERIAL SELECTION
         // =====================================================
 
         int facadeMaterialIndex =
@@ -309,6 +354,8 @@ public class OSMBuildingGenerator
                 floorCount,
                 osmId,
                 style,
+                roofType,
+                roofHeight,
                 shopPalette,
                 balconyPalette
             );
@@ -320,10 +367,6 @@ public class OSMBuildingGenerator
             return;
         }
 
-        // =====================================================
-        // MESH OBJECT
-        // =====================================================
-
         GameObject meshObject =
             new GameObject("Mesh");
 
@@ -332,13 +375,13 @@ public class OSMBuildingGenerator
             false
         );
 
-        MeshFilter filter =
+        MeshFilter meshFilter =
             meshObject.AddComponent<MeshFilter>();
 
-        MeshRenderer renderer =
+        MeshRenderer meshRenderer =
             meshObject.AddComponent<MeshRenderer>();
 
-        filter.sharedMesh =
+        meshFilter.sharedMesh =
             result.mesh;
 
         // =====================================================
@@ -346,8 +389,9 @@ public class OSMBuildingGenerator
         //
         // 0 = facade
         // 1 = glass
-        // 2... = used shops
-        // sonra = used balconies
+        // shop...
+        // balcony...
+        // roof
         // =====================================================
 
         Material facadeMaterial =
@@ -368,6 +412,18 @@ public class OSMBuildingGenerator
                 facadeMaterial;
         }
 
+        Material roofMaterial =
+            GetMaterial(
+                roofMaterials,
+                roofMaterialIndex
+            );
+
+        if (roofMaterial == null)
+        {
+            roofMaterial =
+                facadeMaterial;
+        }
+
         List<Material> rendererMaterials =
             new List<Material>();
 
@@ -383,13 +439,13 @@ public class OSMBuildingGenerator
         // SHOP MATERIALS
         // =====================================================
 
-        foreach (int shopMaterialIndex
+        foreach (int index
                  in result.usedShopMaterialIndices)
         {
             Material material =
                 GetMaterial(
                     shopMaterials,
-                    shopMaterialIndex
+                    index
                 );
 
             if (material == null)
@@ -407,13 +463,13 @@ public class OSMBuildingGenerator
         // BALCONY MATERIALS
         // =====================================================
 
-        foreach (int balconyMaterialIndex
+        foreach (int index
                  in result.usedBalconyMaterialIndices)
         {
             Material material =
                 GetMaterial(
                     balconyMaterials,
-                    balconyMaterialIndex
+                    index
                 );
 
             if (material == null)
@@ -427,7 +483,15 @@ public class OSMBuildingGenerator
             );
         }
 
-        renderer.sharedMaterials =
+        // =====================================================
+        // ROOF MATERIAL
+        // =====================================================
+
+        rendererMaterials.Add(
+            roofMaterial
+        );
+
+        meshRenderer.sharedMaterials =
             rendererMaterials.ToArray();
     }
 
@@ -441,25 +505,24 @@ public class OSMBuildingGenerator
         int floorCount,
         long osmId,
         BuildingStyle style,
+        RoofType roofType,
+        float roofHeight,
         int[] shopPalette,
         int[] balconyPalette)
     {
         MeshBuilder builder =
             new MeshBuilder();
 
-        // Geometri random'ý
         System.Random geometryRandom =
             CreateStableRandom(
                 osmId + 1009
             );
 
-        // Shop materyal random'ý
         System.Random shopRandom =
             CreateStableRandom(
                 osmId + 2003
             );
 
-        // Balcony materyal random'ý
         System.Random balconyRandom =
             CreateStableRandom(
                 osmId + 5003
@@ -484,28 +547,26 @@ public class OSMBuildingGenerator
             Vector3 end =
                 footprint[
                     (edgeIndex + 1)
-                    % footprint.Count
+                    %
+                    footprint.Count
                 ];
 
             Vector3 edge =
-                end - start;
+                end -
+                start;
 
             edge.y = 0f;
 
             float edgeLength =
                 edge.magnitude;
 
-            if (edgeLength < 0.40f)
+            if (edgeLength < 0.4f)
                 continue;
 
             Vector3 direction =
                 edge.normalized;
 
-            /*
-             * CCW polygon.
-             * Ýç taraf sol,
-             * dýþ taraf sað.
-             */
+            // CCW polygon -> dýþ taraf sað.
             Vector3 outward =
                 new Vector3(
                     direction.z,
@@ -532,14 +593,20 @@ public class OSMBuildingGenerator
         }
 
         // =====================================================
-        // ROOF + BOTTOM
+        // ROOF
         // =====================================================
 
         AddRoof(
             builder,
             footprint,
-            height
+            height,
+            roofHeight,
+            roofType
         );
+
+        // =====================================================
+        // BOTTOM
+        // =====================================================
 
         AddBottom(
             builder,
@@ -550,7 +617,7 @@ public class OSMBuildingGenerator
             return null;
 
         // =====================================================
-        // USED SHOP MATERIALS
+        // USED MATERIALS
         // =====================================================
 
         List<int> usedShopIndices =
@@ -560,10 +627,6 @@ public class OSMBuildingGenerator
 
         usedShopIndices.Sort();
 
-        // =====================================================
-        // USED BALCONY MATERIALS
-        // =====================================================
-
         List<int> usedBalconyIndices =
             new List<int>(
                 builder.balconyTriangles.Keys
@@ -572,14 +635,14 @@ public class OSMBuildingGenerator
         usedBalconyIndices.Sort();
 
         // =====================================================
-        // CREATE MESH
+        // UNITY MESH
         // =====================================================
 
         Mesh mesh =
             new Mesh();
 
         mesh.name =
-            $"ProceduralBuilding_{style.styleName}";
+            $"Building_{style.styleName}_{roofType}";
 
         mesh.indexFormat =
             IndexFormat.UInt32;
@@ -593,83 +656,68 @@ public class OSMBuildingGenerator
             builder.uvs
         );
 
-        // =====================================================
-        // SUBMESH COUNT
-        //
-        // 0 facade
-        // 1 glass
-        // shops...
-        // balconies...
-        // =====================================================
+        int shopStart =
+            2;
 
-        mesh.subMeshCount =
-            2 +
-            usedShopIndices.Count +
+        int balconyStart =
+            shopStart +
+            usedShopIndices.Count;
+
+        int roofSubMesh =
+            balconyStart +
             usedBalconyIndices.Count;
 
-        // =====================================================
-        // FACADE
-        // =====================================================
+        mesh.subMeshCount =
+            roofSubMesh + 1;
 
+        // Facade
         mesh.SetTriangles(
             builder.facadeTriangles,
             0,
             false
         );
 
-        // =====================================================
-        // GLASS
-        // =====================================================
-
+        // Glass
         mesh.SetTriangles(
             builder.glassTriangles,
             1,
             false
         );
 
-        // =====================================================
-        // SHOP SUBMESHES
-        // =====================================================
-
+        // Shops
         for (int i = 0;
              i < usedShopIndices.Count;
              i++)
         {
-            int materialIndex =
-                usedShopIndices[i];
-
             mesh.SetTriangles(
                 builder.shopTriangles[
-                    materialIndex
+                    usedShopIndices[i]
                 ],
-                2 + i,
+                shopStart + i,
                 false
             );
         }
 
-        // =====================================================
-        // BALCONY SUBMESHES
-        // =====================================================
-
-        int balconySubMeshStart =
-            2 +
-            usedShopIndices.Count;
-
+        // Balconies
         for (int i = 0;
              i < usedBalconyIndices.Count;
              i++)
         {
-            int materialIndex =
-                usedBalconyIndices[i];
-
             mesh.SetTriangles(
                 builder.balconyTriangles[
-                    materialIndex
+                    usedBalconyIndices[i]
                 ],
-                balconySubMeshStart + i,
+                balconyStart + i,
                 false
             );
         }
+
+        // Roof
+        mesh.SetTriangles(
+            builder.roofTriangles,
+            roofSubMesh,
+            false
+        );
 
         mesh.RecalculateNormals();
         mesh.RecalculateBounds();
@@ -688,7 +736,7 @@ public class OSMBuildingGenerator
     }
 
     // =========================================================
-    // GENERATE FACADE
+    // FACADE
     // =========================================================
 
     private void GenerateFacade(
@@ -726,10 +774,6 @@ public class OSMBuildingGenerator
                 floorCount
             );
 
-        // =====================================================
-        // FLOORS
-        // =====================================================
-
         for (int floor = 0;
              floor < floors;
              floor++)
@@ -746,17 +790,13 @@ public class OSMBuildingGenerator
                 );
 
             if (floorTop <=
-                floorBottom + 0.10f)
+                floorBottom + 0.1f)
             {
                 continue;
             }
 
             bool previousBalcony =
                 false;
-
-            // =================================================
-            // BAYS
-            // =================================================
 
             for (int bay = 0;
                  bay < bayCount;
@@ -798,10 +838,7 @@ public class OSMBuildingGenerator
                         continue;
                     }
 
-                    // =============================================
-                    // GLASS PLAZA GROUND
-                    // =============================================
-
+                    // Plaza zemin camý.
                     if (style.fullGlassGroundFloor &&
                         geometryRandom.NextDouble()
                         < 0.55)
@@ -821,16 +858,8 @@ public class OSMBuildingGenerator
                         continue;
                     }
 
-                    // =============================================
-                    // SHOP
-                    // =============================================
-
-                    bool canShop =
-                        bayWidth >=
-                        1.60f;
-
                     bool createShop =
-                        canShop &&
+                        bayWidth >= 1.6f &&
                         geometryRandom.NextDouble()
                         <
                         style.shopChance;
@@ -877,7 +906,7 @@ public class OSMBuildingGenerator
                 }
 
                 // =================================================
-                // GLASS PLAZA UPPER FLOOR
+                // GLASS PLAZA
                 // =================================================
 
                 if (style.fullGlassUpperFloors)
@@ -940,10 +969,7 @@ public class OSMBuildingGenerator
             }
         }
 
-        // =====================================================
-        // EXTRA HEIGHT
-        // =====================================================
-
+        // OSM height > levels * 3 ise kalan duvar.
         float generatedHeight =
             floors *
             FloorHeight;
@@ -967,7 +993,7 @@ public class OSMBuildingGenerator
     }
 
     // =========================================================
-    // WINDOW CELL
+    // WINDOW
     // =========================================================
 
     private void AddWindowCell(
@@ -1011,7 +1037,7 @@ public class OSMBuildingGenerator
                 2f
             );
 
-        if (openingWidth < 0.50f)
+        if (openingWidth < 0.5f)
         {
             AddSolidCell(
                 builder,
@@ -1030,12 +1056,9 @@ public class OSMBuildingGenerator
         float openingBottom;
         float openingHeight;
 
-        // =====================================================
-        // BALCONY DOOR
-        // =====================================================
-
         if (balcony)
         {
+            // Balkon kapýsý.
             openingBottom =
                 floorBottom +
                 0.08f;
@@ -1063,7 +1086,7 @@ public class OSMBuildingGenerator
                 );
         }
 
-        if (openingHeight < 0.50f)
+        if (openingHeight < 0.5f)
         {
             AddSolidCell(
                 builder,
@@ -1078,10 +1101,6 @@ public class OSMBuildingGenerator
 
             return;
         }
-
-        // =====================================================
-        // WINDOW / DOOR
-        // =====================================================
 
         AddOpeningCell(
             builder,
@@ -1099,44 +1118,40 @@ public class OSMBuildingGenerator
             SurfaceType.Glass
         );
 
-        // =====================================================
-        // BALCONY GEOMETRY
-        // =====================================================
+        if (!balcony)
+            return;
 
-        if (balcony)
-        {
-            float balconyWidth =
-                Mathf.Min(
-                    style.balconyMaxWidth,
-                    cellWidth -
-                    0.25f
-                );
+        float balconyWidth =
+            Mathf.Min(
+                style.balconyMaxWidth,
+                cellWidth -
+                0.25f
+            );
 
-            if (balconyWidth >= 0.90f)
-            {
-                float center =
-                    (
-                        cellStart +
-                        cellEnd
-                    ) *
-                    0.5f;
+        if (balconyWidth < 0.9f)
+            return;
 
-                AddBalcony(
-                    builder,
-                    edgeStart,
-                    direction,
-                    outward,
-                    center,
-                    floorBottom,
-                    balconyWidth,
-                    balconyMaterialIndex
-                );
-            }
-        }
+        float center =
+            (
+                cellStart +
+                cellEnd
+            ) *
+            0.5f;
+
+        AddBalcony(
+            builder,
+            edgeStart,
+            direction,
+            outward,
+            center,
+            floorBottom,
+            balconyWidth,
+            balconyMaterialIndex
+        );
     }
 
     // =========================================================
-    // SHOP CELL
+    // SHOP
     // =========================================================
 
     private void AddShopCell(
@@ -1185,7 +1200,7 @@ public class OSMBuildingGenerator
                 style.shopHeight,
                 floorTop -
                 openingBottom -
-                0.20f
+                0.2f
             );
 
         if (openingHeight < 0.75f)
@@ -1246,7 +1261,7 @@ public class OSMBuildingGenerator
             style.windowSideMargin *
             2f;
 
-        if (openingWidth < 0.80f)
+        if (openingWidth < 0.8f)
         {
             AddSolidCell(
                 builder,
@@ -1264,7 +1279,7 @@ public class OSMBuildingGenerator
 
         float openingBottom =
             floorBottom +
-            0.10f;
+            0.1f;
 
         float openingHeight =
             floorTop -
@@ -1272,20 +1287,7 @@ public class OSMBuildingGenerator
             0.12f;
 
         if (openingHeight < 1f)
-        {
-            AddSolidCell(
-                builder,
-                edgeStart,
-                direction,
-                outward,
-                cellStart,
-                cellEnd,
-                floorBottom,
-                floorTop
-            );
-
             return;
-        }
 
         AddOpeningCell(
             builder,
@@ -1319,15 +1321,14 @@ public class OSMBuildingGenerator
         float floorTop,
         BuildingStyle style)
     {
-        float cellWidth =
-            cellEnd -
-            cellStart;
-
         float width =
             Mathf.Min(
                 style.entranceWidth,
-                cellWidth -
-                0.30f
+                (
+                    cellEnd -
+                    cellStart
+                ) -
+                0.3f
             );
 
         if (width < 0.65f)
@@ -1355,7 +1356,7 @@ public class OSMBuildingGenerator
                 style.entranceHeight,
                 floorTop -
                 openingBottom -
-                0.10f
+                0.1f
             );
 
         AddOpeningCell(
@@ -1376,7 +1377,7 @@ public class OSMBuildingGenerator
     }
 
     // =========================================================
-    // OPENING CELL
+    // OPENING
     // =========================================================
 
     private void AddOpeningCell(
@@ -1402,42 +1403,39 @@ public class OSMBuildingGenerator
             ) *
             0.5f;
 
-        float openingLeft =
+        float left =
             center -
             openingWidth *
             0.5f;
 
-        float openingRight =
+        float right =
             center +
             openingWidth *
             0.5f;
 
-        openingLeft =
+        left =
             Mathf.Clamp(
-                openingLeft,
+                left,
                 cellStart,
                 cellEnd
             );
 
-        openingRight =
+        right =
             Mathf.Clamp(
-                openingRight,
+                right,
                 cellStart,
                 cellEnd
             );
 
-        float openingTop =
+        float top =
             Mathf.Min(
                 openingBottom +
                 openingHeight,
                 cellTop
             );
 
-        // =====================================================
-        // LEFT
-        // =====================================================
-
-        if (openingLeft >
+        // Left wall
+        if (left >
             cellStart + 0.005f)
         {
             AddFacadeQuad(
@@ -1446,7 +1444,7 @@ public class OSMBuildingGenerator
                 direction,
                 outward,
                 cellStart,
-                openingLeft,
+                left,
                 cellBottom,
                 cellTop,
                 0f,
@@ -1454,19 +1452,16 @@ public class OSMBuildingGenerator
             );
         }
 
-        // =====================================================
-        // RIGHT
-        // =====================================================
-
+        // Right wall
         if (cellEnd >
-            openingRight + 0.005f)
+            right + 0.005f)
         {
             AddFacadeQuad(
                 builder,
                 edgeStart,
                 direction,
                 outward,
-                openingRight,
+                right,
                 cellEnd,
                 cellBottom,
                 cellTop,
@@ -1475,10 +1470,7 @@ public class OSMBuildingGenerator
             );
         }
 
-        // =====================================================
-        // BOTTOM
-        // =====================================================
-
+        // Bottom
         if (openingBottom >
             cellBottom + 0.005f)
         {
@@ -1487,8 +1479,8 @@ public class OSMBuildingGenerator
                 edgeStart,
                 direction,
                 outward,
-                openingLeft,
-                openingRight,
+                left,
+                right,
                 cellBottom,
                 openingBottom,
                 0f,
@@ -1496,40 +1488,34 @@ public class OSMBuildingGenerator
             );
         }
 
-        // =====================================================
-        // TOP
-        // =====================================================
-
+        // Top
         if (cellTop >
-            openingTop + 0.005f)
+            top + 0.005f)
         {
             AddFacadeQuad(
                 builder,
                 edgeStart,
                 direction,
                 outward,
-                openingLeft,
-                openingRight,
-                openingTop,
+                left,
+                right,
+                top,
                 cellTop,
                 0f,
                 SurfaceType.Facade
             );
         }
 
-        // =====================================================
-        // OPENING SURFACE
-        // =====================================================
-
+        // Window/shop surface
         AddFacadeQuad(
             builder,
             edgeStart,
             direction,
             outward,
-            openingLeft,
-            openingRight,
+            left,
+            right,
             openingBottom,
-            openingTop,
+            top,
             surfaceOffset,
             surfaceType,
             shopMaterialIndex
@@ -1545,20 +1531,20 @@ public class OSMBuildingGenerator
         Vector3 edgeStart,
         Vector3 direction,
         Vector3 outward,
-        float cellStart,
-        float cellEnd,
-        float floorBottom,
-        float floorTop)
+        float start,
+        float end,
+        float bottom,
+        float top)
     {
         AddFacadeQuad(
             builder,
             edgeStart,
             direction,
             outward,
-            cellStart,
-            cellEnd,
-            floorBottom,
-            floorTop,
+            start,
+            end,
+            bottom,
+            top,
             0f,
             SurfaceType.Facade
         );
@@ -1583,15 +1569,11 @@ public class OSMBuildingGenerator
     {
         if (horizontalEnd <=
             horizontalStart)
-        {
             return;
-        }
 
         if (verticalEnd <=
             verticalStart)
-        {
             return;
-        }
 
         Vector3 bottomLeft =
             edgeStart +
@@ -1632,21 +1614,10 @@ public class OSMBuildingGenerator
         int index =
             builder.vertices.Count;
 
-        builder.vertices.Add(
-            bottomLeft
-        );
-
-        builder.vertices.Add(
-            bottomRight
-        );
-
-        builder.vertices.Add(
-            topLeft
-        );
-
-        builder.vertices.Add(
-            topRight
-        );
+        builder.vertices.Add(bottomLeft);
+        builder.vertices.Add(bottomRight);
+        builder.vertices.Add(topLeft);
+        builder.vertices.Add(topRight);
 
         float width =
             horizontalEnd -
@@ -1655,10 +1626,6 @@ public class OSMBuildingGenerator
         float height =
             verticalEnd -
             verticalStart;
-
-        // =====================================================
-        // UV
-        // =====================================================
 
         if (surfaceType ==
             SurfaceType.Facade)
@@ -1723,23 +1690,19 @@ public class OSMBuildingGenerator
         triangles.Add(index + 3);
     }
 
-    // =========================================================
-    // TRIANGLE LIST
-    // =========================================================
-
     private List<int> GetTriangleList(
         MeshBuilder builder,
-        SurfaceType surfaceType,
+        SurfaceType type,
         int shopMaterialIndex)
     {
-        if (surfaceType ==
+        if (type ==
             SurfaceType.Glass)
         {
             return
                 builder.glassTriangles;
         }
 
-        if (surfaceType ==
+        if (type ==
             SurfaceType.Shop)
         {
             if (shopMaterialIndex < 0)
@@ -1761,8 +1724,7 @@ public class OSMBuildingGenerator
                 );
             }
 
-            return
-                triangles;
+            return triangles;
         }
 
         return
@@ -1781,17 +1743,14 @@ public class OSMBuildingGenerator
         float centerDistance,
         float floorY,
         float width,
-        int balconyMaterialIndex)
+        int materialIndex)
     {
         Vector3 wallCenter =
             edgeStart +
             direction *
             centerDistance;
 
-        // =====================================================
-        // SLAB
-        // =====================================================
-
+        // Slab
         Vector3 slabCenter =
             wallCenter +
             outward *
@@ -1813,13 +1772,10 @@ public class OSMBuildingGenerator
             width,
             BalconyThickness,
             BalconyDepth,
-            balconyMaterialIndex
+            materialIndex
         );
 
-        // =====================================================
-        // FRONT RAIL
-        // =====================================================
-
+        // Front rail
         Vector3 frontRail =
             wallCenter +
             outward *
@@ -1842,13 +1798,10 @@ public class OSMBuildingGenerator
             width,
             RailHeight,
             RailThickness,
-            balconyMaterialIndex
+            materialIndex
         );
 
-        // =====================================================
-        // LEFT RAIL
-        // =====================================================
-
+        // Left rail
         Vector3 leftRail =
             wallCenter -
             direction *
@@ -1877,13 +1830,10 @@ public class OSMBuildingGenerator
             BalconyDepth,
             RailHeight,
             RailThickness,
-            balconyMaterialIndex
+            materialIndex
         );
 
-        // =====================================================
-        // RIGHT RAIL
-        // =====================================================
-
+        // Right rail
         Vector3 rightRail =
             wallCenter +
             direction *
@@ -1912,13 +1862,9 @@ public class OSMBuildingGenerator
             BalconyDepth,
             RailHeight,
             RailThickness,
-            balconyMaterialIndex
+            materialIndex
         );
     }
-
-    // =========================================================
-    // ORIENTED BOX
-    // =========================================================
 
     private void AddOrientedBox(
         MeshBuilder builder,
@@ -1933,69 +1879,52 @@ public class OSMBuildingGenerator
         right.Normalize();
         forward.Normalize();
 
-        float hx =
+        Vector3 r =
+            right *
             sizeX *
             0.5f;
 
-        float hy =
+        Vector3 u =
+            Vector3.up *
             sizeY *
             0.5f;
 
-        float hz =
-            sizeZ *
-            0.5f;
-
-        Vector3 r =
-            right *
-            hx;
-
-        Vector3 u =
-            Vector3.up *
-            hy;
-
         Vector3 f =
             forward *
-            hz;
+            sizeZ *
+            0.5f;
 
         int start =
             builder.vertices.Count;
 
-        // 0
         builder.vertices.Add(
             center - r - u - f
         );
 
-        // 1
         builder.vertices.Add(
             center + r - u - f
         );
 
-        // 2
         builder.vertices.Add(
             center - r + u - f
         );
 
-        // 3
         builder.vertices.Add(
             center + r + u - f
         );
 
-        // 4
         builder.vertices.Add(
             center - r - u + f
         );
 
-        // 5
         builder.vertices.Add(
             center + r - u + f
         );
 
-        // 6
         builder.vertices.Add(
             center - r + u + f
         );
 
-        // 7
         builder.vertices.Add(
             center + r + u + f
         );
@@ -2015,7 +1944,7 @@ public class OSMBuildingGenerator
                 balconyMaterialIndex
             );
 
-        // BACK
+        // Back
         AddTriangle(
             triangles,
             start + 0,
@@ -2030,7 +1959,7 @@ public class OSMBuildingGenerator
             start + 3
         );
 
-        // FRONT
+        // Front
         AddTriangle(
             triangles,
             start + 4,
@@ -2045,7 +1974,7 @@ public class OSMBuildingGenerator
             start + 6
         );
 
-        // LEFT
+        // Left
         AddTriangle(
             triangles,
             start + 0,
@@ -2060,7 +1989,7 @@ public class OSMBuildingGenerator
             start + 2
         );
 
-        // RIGHT
+        // Right
         AddTriangle(
             triangles,
             start + 1,
@@ -2075,7 +2004,7 @@ public class OSMBuildingGenerator
             start + 5
         );
 
-        // BOTTOM
+        // Bottom
         AddTriangle(
             triangles,
             start + 0,
@@ -2090,7 +2019,7 @@ public class OSMBuildingGenerator
             start + 4
         );
 
-        // TOP
+        // Top
         AddTriangle(
             triangles,
             start + 2,
@@ -2106,39 +2035,2176 @@ public class OSMBuildingGenerator
         );
     }
 
-    // =========================================================
-    // BALCONY TRIANGLE LIST
-    // =========================================================
-
     private List<int> GetBalconyTriangleList(
         MeshBuilder builder,
-        int balconyMaterialIndex)
+        int materialIndex)
     {
-        /*
-         * Balcony material verilmediyse
-         * facade materyalini kullan.
-         */
-        if (balconyMaterialIndex < 0)
+        if (materialIndex < 0)
         {
             return
                 builder.facadeTriangles;
         }
 
         if (!builder.balconyTriangles.TryGetValue(
-                balconyMaterialIndex,
+                materialIndex,
                 out List<int> triangles))
         {
             triangles =
                 new List<int>();
 
             builder.balconyTriangles.Add(
-                balconyMaterialIndex,
+                materialIndex,
                 triangles
             );
         }
 
+        return triangles;
+    }
+
+    // =========================================================
+    // ROOF TYPE
+    // =========================================================
+
+    private RoofType SelectRoofType(
+        OSMWay way,
+        BuildingStyle style,
+        List<Vector3> footprint)
+    {
+        string osmShape =
+            GetTagLower(
+                way,
+                "roof:shape"
+            );
+
+        // =====================================================
+        // OSM FIRST
+        // =====================================================
+
+        if (!string.IsNullOrEmpty(
+                osmShape))
+        {
+            RoofType? requested =
+                null;
+
+            switch (osmShape)
+            {
+                case "flat":
+
+                    requested =
+                        RoofType.Flat;
+
+                    break;
+
+                case "gabled":
+                case "gable":
+
+                    requested =
+                        RoofType.Gabled;
+
+                    break;
+
+                case "hipped":
+                case "half-hipped":
+
+                    requested =
+                        RoofType.Hipped;
+
+                    break;
+
+                case "pyramidal":
+
+                    requested =
+                        RoofType.Pyramidal;
+
+                    break;
+
+                case "skillion":
+                case "shed":
+
+                    requested =
+                        RoofType.Skillion;
+
+                    break;
+
+                case "mansard":
+                case "gambrel":
+
+                    requested =
+                        RoofType.Mansard;
+
+                    break;
+            }
+
+            if (requested.HasValue)
+            {
+                if (CanUseRoofType(
+                        footprint,
+                        requested.Value))
+                {
+                    return
+                        requested.Value;
+                }
+
+                // Önceden burada Flat'e dönüyordu.
+                // Artýk karmaþýk footprint -> Skillion.
+                if (requested.Value !=
+                    RoofType.Flat)
+                {
+                    return
+                        RoofType.Skillion;
+                }
+
+                return
+                    RoofType.Flat;
+            }
+        }
+
+        // =====================================================
+        // PROCEDURAL DISTRIBUTION
+        // =====================================================
+
+        System.Random random =
+            CreateStableRandom(
+                way.id + 14111
+            );
+
+        int roll =
+            random.Next(
+                0,
+                100
+            );
+
+        RoofType type;
+
+        switch (style.archetype)
+        {
+            // =================================================
+            // CLASSIC RESIDENTIAL
+            //
+            // Flat       %8
+            // Gabled    %27
+            // Hipped    %35
+            // Pyramidal %12
+            // Mansard   %13
+            // Skillion   %5
+            // =================================================
+
+            case BuildingArchetype.ClassicResidential:
+
+                if (roll < 8)
+                    type = RoofType.Flat;
+
+                else if (roll < 35)
+                    type = RoofType.Gabled;
+
+                else if (roll < 70)
+                    type = RoofType.Hipped;
+
+                else if (roll < 82)
+                    type = RoofType.Pyramidal;
+
+                else if (roll < 95)
+                    type = RoofType.Mansard;
+
+                else
+                    type = RoofType.Skillion;
+
+                break;
+
+            // =================================================
+            // MODERN RESIDENTIAL
+            //
+            // Flat       %18
+            // Hipped     %28
+            // Gabled     %18
+            // Skillion   %20
+            // Pyramidal  %10
+            // Mansard     %6
+            // =================================================
+
+            case BuildingArchetype.ModernResidential:
+
+                if (roll < 18)
+                    type = RoofType.Flat;
+
+                else if (roll < 46)
+                    type = RoofType.Hipped;
+
+                else if (roll < 64)
+                    type = RoofType.Gabled;
+
+                else if (roll < 84)
+                    type = RoofType.Skillion;
+
+                else if (roll < 94)
+                    type = RoofType.Pyramidal;
+
+                else
+                    type = RoofType.Mansard;
+
+                break;
+
+            // =================================================
+            // MIXED USE
+            // =================================================
+
+            case BuildingArchetype.MixedUse:
+
+                if (roll < 25)
+                    type = RoofType.Flat;
+
+                else if (roll < 50)
+                    type = RoofType.Hipped;
+
+                else if (roll < 68)
+                    type = RoofType.Gabled;
+
+                else if (roll < 86)
+                    type = RoofType.Skillion;
+
+                else if (roll < 95)
+                    type = RoofType.Pyramidal;
+
+                else
+                    type = RoofType.Mansard;
+
+                break;
+
+            // =================================================
+            // OFFICE
+            // =================================================
+
+            case BuildingArchetype.Office:
+
+                if (roll < 55)
+                    type = RoofType.Flat;
+
+                else if (roll < 80)
+                    type = RoofType.Skillion;
+
+                else if (roll < 90)
+                    type = RoofType.Hipped;
+
+                else
+                    type = RoofType.Pyramidal;
+
+                break;
+
+            // =================================================
+            // PLAZA
+            // =================================================
+
+            case BuildingArchetype.GlassPlaza:
+
+                if (roll < 78)
+                    type = RoofType.Flat;
+
+                else
+                    type = RoofType.Skillion;
+
+                break;
+
+            default:
+
+                type =
+                    RoofType.Hipped;
+
+                break;
+        }
+
+        // =====================================================
+        // FALLBACK
+        // =====================================================
+
+        if (!CanUseRoofType(
+                footprint,
+                type))
+        {
+            if (type !=
+                RoofType.Flat)
+            {
+                return
+                    RoofType.Skillion;
+            }
+        }
+
+        return type;
+    }
+
+    // =========================================================
+    // ROOF COMPATIBILITY
+    // =========================================================
+
+    private bool CanUseRoofType(
+        List<Vector3> footprint,
+        RoofType roofType)
+    {
+        if (footprint == null ||
+            footprint.Count < 3)
+        {
+            return false;
+        }
+
+        switch (roofType)
+        {
+            case RoofType.Flat:
+
+                return true;
+
+            case RoofType.Skillion:
+
+                // Basit polygonlarýn çoðunda çalýþýr.
+                return true;
+
+            case RoofType.Pyramidal:
+
+                return
+                    IsConvexPolygon(
+                        footprint
+                    );
+
+            case RoofType.Gabled:
+            case RoofType.Hipped:
+            case RoofType.Mansard:
+
+                return
+                    footprint.Count == 4 &&
+                    IsConvexPolygon(
+                        footprint
+                    );
+
+            default:
+
+                return false;
+        }
+    }
+
+    private bool IsConvexPolygon(
+        List<Vector3> polygon)
+    {
+        if (polygon == null ||
+            polygon.Count < 3)
+        {
+            return false;
+        }
+
+        float sign =
+            0f;
+
+        for (int i = 0;
+             i < polygon.Count;
+             i++)
+        {
+            Vector2 a =
+                ToXZ(
+                    polygon[i]
+                );
+
+            Vector2 b =
+                ToXZ(
+                    polygon[
+                        (i + 1)
+                        %
+                        polygon.Count
+                    ]
+                );
+
+            Vector2 c =
+                ToXZ(
+                    polygon[
+                        (i + 2)
+                        %
+                        polygon.Count
+                    ]
+                );
+
+            float cross =
+                Cross2D(
+                    b - a,
+                    c - b
+                );
+
+            if (Mathf.Abs(cross) <
+                0.0001f)
+            {
+                continue;
+            }
+
+            float currentSign =
+                Mathf.Sign(
+                    cross
+                );
+
+            if (sign == 0f)
+            {
+                sign =
+                    currentSign;
+            }
+            else if (currentSign !=
+                     sign)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // =========================================================
+    // ROOF HEIGHT
+    // =========================================================
+
+    private float GetRoofHeight(
+        OSMWay way,
+        List<Vector3> footprint,
+        RoofType roofType)
+    {
+        if (roofType ==
+            RoofType.Flat)
+        {
+            return 0f;
+        }
+
+        string roofHeightTag =
+            way.GetTag(
+                "roof:height"
+            );
+
+        if (TryParseMeters(
+                roofHeightTag,
+                out float osmHeight))
+        {
+            return
+                Mathf.Clamp(
+                    osmHeight,
+                    0.4f,
+                    8f
+                );
+        }
+
+        float minX =
+            float.MaxValue;
+
+        float maxX =
+            float.MinValue;
+
+        float minZ =
+            float.MaxValue;
+
+        float maxZ =
+            float.MinValue;
+
+        foreach (Vector3 point
+                 in footprint)
+        {
+            minX =
+                Mathf.Min(
+                    minX,
+                    point.x
+                );
+
+            maxX =
+                Mathf.Max(
+                    maxX,
+                    point.x
+                );
+
+            minZ =
+                Mathf.Min(
+                    minZ,
+                    point.z
+                );
+
+            maxZ =
+                Mathf.Max(
+                    maxZ,
+                    point.z
+                );
+        }
+
+        float shortestDimension =
+            Mathf.Max(
+                1f,
+                Mathf.Min(
+                    maxX - minX,
+                    maxZ - minZ
+                )
+            );
+
+        System.Random random =
+            CreateStableRandom(
+                way.id + 17777
+            );
+
+        float multiplier;
+
+        switch (roofType)
+        {
+            case RoofType.Gabled:
+
+                multiplier =
+                    RandomRange(
+                        random,
+                        0.25f,
+                        0.42f
+                    );
+
+                break;
+
+            case RoofType.Hipped:
+
+                multiplier =
+                    RandomRange(
+                        random,
+                        0.22f,
+                        0.38f
+                    );
+
+                break;
+
+            case RoofType.Pyramidal:
+
+                multiplier =
+                    RandomRange(
+                        random,
+                        0.24f,
+                        0.40f
+                    );
+
+                break;
+
+            case RoofType.Mansard:
+
+                multiplier =
+                    RandomRange(
+                        random,
+                        0.32f,
+                        0.50f
+                    );
+
+                break;
+
+            case RoofType.Skillion:
+
+                multiplier =
+                    RandomRange(
+                        random,
+                        0.12f,
+                        0.25f
+                    );
+
+                break;
+
+            default:
+
+                multiplier =
+                    0.25f;
+
+                break;
+        }
+
         return
-            triangles;
+            Mathf.Clamp(
+                shortestDimension *
+                multiplier,
+                0.8f,
+                5.5f
+            );
+    }
+
+    // =========================================================
+    // ADD ROOF
+    // =========================================================
+
+    private void AddRoof(
+        MeshBuilder builder,
+        List<Vector3> footprint,
+        float buildingHeight,
+        float roofHeight,
+        RoofType roofType)
+    {
+        switch (roofType)
+        {
+            case RoofType.Gabled:
+
+                if (CanUseRoofType(
+                        footprint,
+                        RoofType.Gabled))
+                {
+                    AddGabledRoof(
+                        builder,
+                        footprint,
+                        buildingHeight,
+                        roofHeight
+                    );
+                }
+                else
+                {
+                    AddSkillionRoof(
+                        builder,
+                        footprint,
+                        buildingHeight,
+                        roofHeight
+                    );
+                }
+
+                break;
+
+            case RoofType.Hipped:
+
+                if (CanUseRoofType(
+                        footprint,
+                        RoofType.Hipped))
+                {
+                    AddHippedRoof(
+                        builder,
+                        footprint,
+                        buildingHeight,
+                        roofHeight
+                    );
+                }
+                else
+                {
+                    AddSkillionRoof(
+                        builder,
+                        footprint,
+                        buildingHeight,
+                        roofHeight
+                    );
+                }
+
+                break;
+
+            case RoofType.Pyramidal:
+
+                if (CanUseRoofType(
+                        footprint,
+                        RoofType.Pyramidal))
+                {
+                    AddPyramidalRoof(
+                        builder,
+                        footprint,
+                        buildingHeight,
+                        roofHeight
+                    );
+                }
+                else
+                {
+                    AddSkillionRoof(
+                        builder,
+                        footprint,
+                        buildingHeight,
+                        roofHeight
+                    );
+                }
+
+                break;
+
+            case RoofType.Skillion:
+
+                AddSkillionRoof(
+                    builder,
+                    footprint,
+                    buildingHeight,
+                    roofHeight
+                );
+
+                break;
+
+            case RoofType.Mansard:
+
+                if (CanUseRoofType(
+                        footprint,
+                        RoofType.Mansard))
+                {
+                    AddMansardRoof(
+                        builder,
+                        footprint,
+                        buildingHeight,
+                        roofHeight
+                    );
+                }
+                else
+                {
+                    AddSkillionRoof(
+                        builder,
+                        footprint,
+                        buildingHeight,
+                        roofHeight
+                    );
+                }
+
+                break;
+
+            case RoofType.Flat:
+            default:
+
+                AddFlatRoof(
+                    builder,
+                    footprint,
+                    buildingHeight
+                );
+
+                break;
+        }
+    }
+
+    // =========================================================
+    // FLAT ROOF
+    // =========================================================
+
+    private void AddFlatRoof(
+        MeshBuilder builder,
+        List<Vector3> footprint,
+        float height)
+    {
+        List<int> triangles =
+            TriangulatePolygon(
+                footprint
+            );
+
+        if (triangles.Count < 3)
+            return;
+
+        int start =
+            builder.vertices.Count;
+
+        foreach (Vector3 point
+                 in footprint)
+        {
+            builder.vertices.Add(
+                new Vector3(
+                    point.x,
+                    height,
+                    point.z
+                )
+            );
+
+            builder.uvs.Add(
+                new Vector2(
+                    point.x * 0.2f,
+                    point.z * 0.2f
+                )
+            );
+        }
+
+        for (int i = 0;
+             i < triangles.Count;
+             i += 3)
+        {
+            AddTriangleExpectedNormal(
+                builder,
+                builder.roofTriangles,
+                start + triangles[i],
+                start + triangles[i + 1],
+                start + triangles[i + 2],
+                Vector3.up
+            );
+        }
+    }
+
+    // =========================================================
+    // GABLED ROOF
+    // =========================================================
+
+    private void AddGabledRoof(
+        MeshBuilder builder,
+        List<Vector3> footprint,
+        float baseHeight,
+        float roofHeight)
+    {
+        GetCanonicalRoofQuad(
+            footprint,
+            out Vector3 p0,
+            out Vector3 p1,
+            out Vector3 p2,
+            out Vector3 p3
+        );
+
+        p0.y = baseHeight;
+        p1.y = baseHeight;
+        p2.y = baseHeight;
+        p3.y = baseHeight;
+
+        Vector3 endA =
+            (
+                p3 +
+                p0
+            ) *
+            0.5f;
+
+        Vector3 endB =
+            (
+                p1 +
+                p2
+            ) *
+            0.5f;
+
+        Vector3 ridgeA =
+            endA +
+            Vector3.up *
+            roofHeight;
+
+        Vector3 ridgeB =
+            endB +
+            Vector3.up *
+            roofHeight;
+
+        int i0 =
+            AddRoofVertex(
+                builder,
+                p0
+            );
+
+        int i1 =
+            AddRoofVertex(
+                builder,
+                p1
+            );
+
+        int i2 =
+            AddRoofVertex(
+                builder,
+                p2
+            );
+
+        int i3 =
+            AddRoofVertex(
+                builder,
+                p3
+            );
+
+        int rA =
+            AddRoofVertex(
+                builder,
+                ridgeA
+            );
+
+        int rB =
+            AddRoofVertex(
+                builder,
+                ridgeB
+            );
+
+        Vector3 outward0 =
+            GetEdgeOutward(
+                p0,
+                p1
+            );
+
+        Vector3 outward2 =
+            GetEdgeOutward(
+                p2,
+                p3
+            );
+
+        // Roof side 1
+        AddQuadExpectedNormal(
+            builder,
+            builder.roofTriangles,
+            i0,
+            i1,
+            rB,
+            rA,
+            (
+                outward0 +
+                Vector3.up
+            ).normalized
+        );
+
+        // Roof side 2
+        AddQuadExpectedNormal(
+            builder,
+            builder.roofTriangles,
+            i2,
+            i3,
+            rA,
+            rB,
+            (
+                outward2 +
+                Vector3.up
+            ).normalized
+        );
+
+        // =====================================================
+        // GABLE FACADE TRIANGLES
+        // =====================================================
+
+        Vector3 outward1 =
+            GetEdgeOutward(
+                p1,
+                p2
+            );
+
+        Vector3 outward3 =
+            GetEdgeOutward(
+                p3,
+                p0
+            );
+
+        int fP1 =
+            AddFacadeVertex(
+                builder,
+                p1
+            );
+
+        int fP2 =
+            AddFacadeVertex(
+                builder,
+                p2
+            );
+
+        int fRidgeB =
+            AddFacadeVertex(
+                builder,
+                ridgeB
+            );
+
+        AddTriangleExpectedNormal(
+            builder,
+            builder.facadeTriangles,
+            fP1,
+            fP2,
+            fRidgeB,
+            outward1
+        );
+
+        int fP3 =
+            AddFacadeVertex(
+                builder,
+                p3
+            );
+
+        int fP0 =
+            AddFacadeVertex(
+                builder,
+                p0
+            );
+
+        int fRidgeA =
+            AddFacadeVertex(
+                builder,
+                ridgeA
+            );
+
+        AddTriangleExpectedNormal(
+            builder,
+            builder.facadeTriangles,
+            fP3,
+            fP0,
+            fRidgeA,
+            outward3
+        );
+    }
+
+    // =========================================================
+    // HIPPED ROOF
+    // =========================================================
+
+    private void AddHippedRoof(
+        MeshBuilder builder,
+        List<Vector3> footprint,
+        float baseHeight,
+        float roofHeight)
+    {
+        GetCanonicalRoofQuad(
+            footprint,
+            out Vector3 p0,
+            out Vector3 p1,
+            out Vector3 p2,
+            out Vector3 p3
+        );
+
+        p0.y = baseHeight;
+        p1.y = baseHeight;
+        p2.y = baseHeight;
+        p3.y = baseHeight;
+
+        Vector3 endA =
+            (
+                p3 +
+                p0
+            ) *
+            0.5f;
+
+        Vector3 endB =
+            (
+                p1 +
+                p2
+            ) *
+            0.5f;
+
+        Vector3 ridgeAxis =
+            endB -
+            endA;
+
+        ridgeAxis.y = 0f;
+
+        float longLength =
+            ridgeAxis.magnitude;
+
+        if (longLength < 0.1f)
+        {
+            AddPyramidalRoof(
+                builder,
+                footprint,
+                baseHeight,
+                roofHeight
+            );
+
+            return;
+        }
+
+        ridgeAxis.Normalize();
+
+        float shortWidth =
+            (
+                Vector3.Distance(
+                    p1,
+                    p2
+                ) +
+                Vector3.Distance(
+                    p3,
+                    p0
+                )
+            ) *
+            0.5f;
+
+        float ridgeLength =
+            Mathf.Max(
+                0f,
+                longLength -
+                shortWidth
+            );
+
+        // Kareye yakýnsa gerçek kýrma/piramit daha iyi görünür.
+        if (ridgeLength <
+            shortWidth *
+            0.08f)
+        {
+            AddPyramidalRoof(
+                builder,
+                footprint,
+                baseHeight,
+                roofHeight
+            );
+
+            return;
+        }
+
+        Vector3 center =
+            (
+                endA +
+                endB
+            ) *
+            0.5f;
+
+        Vector3 ridgeA =
+            center -
+            ridgeAxis *
+            ridgeLength *
+            0.5f +
+            Vector3.up *
+            roofHeight;
+
+        Vector3 ridgeB =
+            center +
+            ridgeAxis *
+            ridgeLength *
+            0.5f +
+            Vector3.up *
+            roofHeight;
+
+        int i0 =
+            AddRoofVertex(
+                builder,
+                p0
+            );
+
+        int i1 =
+            AddRoofVertex(
+                builder,
+                p1
+            );
+
+        int i2 =
+            AddRoofVertex(
+                builder,
+                p2
+            );
+
+        int i3 =
+            AddRoofVertex(
+                builder,
+                p3
+            );
+
+        int rA =
+            AddRoofVertex(
+                builder,
+                ridgeA
+            );
+
+        int rB =
+            AddRoofVertex(
+                builder,
+                ridgeB
+            );
+
+        Vector3 outward0 =
+            GetEdgeOutward(p0, p1);
+
+        Vector3 outward1 =
+            GetEdgeOutward(p1, p2);
+
+        Vector3 outward2 =
+            GetEdgeOutward(p2, p3);
+
+        Vector3 outward3 =
+            GetEdgeOutward(p3, p0);
+
+        // Long side 1
+        AddQuadExpectedNormal(
+            builder,
+            builder.roofTriangles,
+            i0,
+            i1,
+            rB,
+            rA,
+            (
+                outward0 +
+                Vector3.up
+            ).normalized
+        );
+
+        // End hip
+        AddTriangleExpectedNormal(
+            builder,
+            builder.roofTriangles,
+            i1,
+            i2,
+            rB,
+            (
+                outward1 +
+                Vector3.up
+            ).normalized
+        );
+
+        // Long side 2
+        AddQuadExpectedNormal(
+            builder,
+            builder.roofTriangles,
+            i2,
+            i3,
+            rA,
+            rB,
+            (
+                outward2 +
+                Vector3.up
+            ).normalized
+        );
+
+        // End hip
+        AddTriangleExpectedNormal(
+            builder,
+            builder.roofTriangles,
+            i3,
+            i0,
+            rA,
+            (
+                outward3 +
+                Vector3.up
+            ).normalized
+        );
+    }
+
+    // =========================================================
+    // PYRAMIDAL ROOF
+    // =========================================================
+
+    private void AddPyramidalRoof(
+        MeshBuilder builder,
+        List<Vector3> footprint,
+        float baseHeight,
+        float roofHeight)
+    {
+        if (!IsConvexPolygon(
+                footprint))
+        {
+            AddSkillionRoof(
+                builder,
+                footprint,
+                baseHeight,
+                roofHeight
+            );
+
+            return;
+        }
+
+        Vector3 center =
+            Vector3.zero;
+
+        foreach (Vector3 point
+                 in footprint)
+        {
+            center += point;
+        }
+
+        center /=
+            footprint.Count;
+
+        center.y =
+            baseHeight +
+            roofHeight;
+
+        List<int> baseIndices =
+            new List<int>();
+
+        for (int i = 0;
+             i < footprint.Count;
+             i++)
+        {
+            Vector3 point =
+                footprint[i];
+
+            point.y =
+                baseHeight;
+
+            baseIndices.Add(
+                AddRoofVertex(
+                    builder,
+                    point
+                )
+            );
+        }
+
+        int apex =
+            AddRoofVertex(
+                builder,
+                center
+            );
+
+        for (int i = 0;
+             i < footprint.Count;
+             i++)
+        {
+            int next =
+                (i + 1)
+                %
+                footprint.Count;
+
+            Vector3 outward =
+                GetEdgeOutward(
+                    footprint[i],
+                    footprint[next]
+                );
+
+            AddTriangleExpectedNormal(
+                builder,
+                builder.roofTriangles,
+                baseIndices[i],
+                baseIndices[next],
+                apex,
+                (
+                    outward +
+                    Vector3.up
+                ).normalized
+            );
+        }
+    }
+
+    // =========================================================
+    // SKILLION / SHED ROOF
+    //
+    // Karmaþýk polygonlarda da çalýþýr.
+    // =========================================================
+
+    private void AddSkillionRoof(
+        MeshBuilder builder,
+        List<Vector3> footprint,
+        float baseHeight,
+        float roofHeight)
+    {
+        if (footprint == null ||
+            footprint.Count < 3)
+        {
+            return;
+        }
+
+        List<int> polygonTriangles =
+            TriangulatePolygon(
+                footprint
+            );
+
+        if (polygonTriangles.Count < 3)
+        {
+            AddFlatRoof(
+                builder,
+                footprint,
+                baseHeight
+            );
+
+            return;
+        }
+
+        // En uzun kenara dik yönde eðim.
+        int longestEdge =
+            FindLongestEdge(
+                footprint
+            );
+
+        Vector3 edgeA =
+            footprint[
+                longestEdge
+            ];
+
+        Vector3 edgeB =
+            footprint[
+                (longestEdge + 1)
+                %
+                footprint.Count
+            ];
+
+        Vector3 longDirection =
+            edgeB -
+            edgeA;
+
+        longDirection.y = 0f;
+
+        if (longDirection.sqrMagnitude <
+            0.001f)
+        {
+            AddFlatRoof(
+                builder,
+                footprint,
+                baseHeight
+            );
+
+            return;
+        }
+
+        longDirection.Normalize();
+
+        Vector3 slopeDirection =
+            new Vector3(
+                -longDirection.z,
+                0f,
+                longDirection.x
+            );
+
+        float minProjection =
+            float.MaxValue;
+
+        float maxProjection =
+            float.MinValue;
+
+        for (int i = 0;
+             i < footprint.Count;
+             i++)
+        {
+            float projection =
+                Vector3.Dot(
+                    footprint[i],
+                    slopeDirection
+                );
+
+            minProjection =
+                Mathf.Min(
+                    minProjection,
+                    projection
+                );
+
+            maxProjection =
+                Mathf.Max(
+                    maxProjection,
+                    projection
+                );
+        }
+
+        float range =
+            maxProjection -
+            minProjection;
+
+        if (range < 0.01f)
+        {
+            AddFlatRoof(
+                builder,
+                footprint,
+                baseHeight
+            );
+
+            return;
+        }
+
+        List<int> roofIndices =
+            new List<int>();
+
+        List<float> vertexHeights =
+            new List<float>();
+
+        // =====================================================
+        // TOP ROOF POINTS
+        // =====================================================
+
+        for (int i = 0;
+             i < footprint.Count;
+             i++)
+        {
+            Vector3 point =
+                footprint[i];
+
+            float projection =
+                Vector3.Dot(
+                    point,
+                    slopeDirection
+                );
+
+            float normalized =
+                Mathf.InverseLerp(
+                    minProjection,
+                    maxProjection,
+                    projection
+                );
+
+            float y =
+                baseHeight +
+                normalized *
+                roofHeight;
+
+            Vector3 roofPoint =
+                new Vector3(
+                    point.x,
+                    y,
+                    point.z
+                );
+
+            roofIndices.Add(
+                AddRoofVertex(
+                    builder,
+                    roofPoint
+                )
+            );
+
+            vertexHeights.Add(
+                y
+            );
+        }
+
+        // =====================================================
+        // TOP SURFACE
+        // =====================================================
+
+        for (int i = 0;
+             i < polygonTriangles.Count;
+             i += 3)
+        {
+            int a =
+                roofIndices[
+                    polygonTriangles[i]
+                ];
+
+            int b =
+                roofIndices[
+                    polygonTriangles[i + 1]
+                ];
+
+            int c =
+                roofIndices[
+                    polygonTriangles[i + 2]
+                ];
+
+            AddTriangleExpectedNormal(
+                builder,
+                builder.roofTriangles,
+                a,
+                b,
+                c,
+                Vector3.up
+            );
+        }
+
+        // =====================================================
+        // SIDE WALLS
+        // =====================================================
+
+        for (int i = 0;
+             i < footprint.Count;
+             i++)
+        {
+            int next =
+                (i + 1)
+                %
+                footprint.Count;
+
+            Vector3 a =
+                footprint[i];
+
+            Vector3 b =
+                footprint[next];
+
+            Vector3 baseA =
+                new Vector3(
+                    a.x,
+                    baseHeight,
+                    a.z
+                );
+
+            Vector3 baseB =
+                new Vector3(
+                    b.x,
+                    baseHeight,
+                    b.z
+                );
+
+            Vector3 topA =
+                new Vector3(
+                    a.x,
+                    vertexHeights[i],
+                    a.z
+                );
+
+            Vector3 topB =
+                new Vector3(
+                    b.x,
+                    vertexHeights[next],
+                    b.z
+                );
+
+            if (topA.y <=
+                    baseHeight + 0.005f &&
+                topB.y <=
+                    baseHeight + 0.005f)
+            {
+                continue;
+            }
+
+            int baseAIndex =
+                AddFacadeVertex(
+                    builder,
+                    baseA
+                );
+
+            int baseBIndex =
+                AddFacadeVertex(
+                    builder,
+                    baseB
+                );
+
+            int topAIndex =
+                AddFacadeVertex(
+                    builder,
+                    topA
+                );
+
+            int topBIndex =
+                AddFacadeVertex(
+                    builder,
+                    topB
+                );
+
+            Vector3 outward =
+                GetEdgeOutward(
+                    a,
+                    b
+                );
+
+            AddQuadExpectedNormal(
+                builder,
+                builder.facadeTriangles,
+                baseAIndex,
+                baseBIndex,
+                topBIndex,
+                topAIndex,
+                outward
+            );
+        }
+    }
+
+    // =========================================================
+    // MANSARD
+    // =========================================================
+
+    private void AddMansardRoof(
+        MeshBuilder builder,
+        List<Vector3> footprint,
+        float baseHeight,
+        float roofHeight)
+    {
+        if (footprint.Count != 4 ||
+            !IsConvexPolygon(
+                footprint))
+        {
+            AddSkillionRoof(
+                builder,
+                footprint,
+                baseHeight,
+                roofHeight
+            );
+
+            return;
+        }
+
+        Vector3 center =
+            Vector3.zero;
+
+        for (int i = 0;
+             i < 4;
+             i++)
+        {
+            center +=
+                footprint[i];
+        }
+
+        center /=
+            4f;
+
+        center.y =
+            baseHeight;
+
+        Vector3[] outer =
+            new Vector3[4];
+
+        Vector3[] middle =
+            new Vector3[4];
+
+        Vector3[] top =
+            new Vector3[4];
+
+        for (int i = 0;
+             i < 4;
+             i++)
+        {
+            outer[i] =
+                new Vector3(
+                    footprint[i].x,
+                    baseHeight,
+                    footprint[i].z
+                );
+
+            // Dik alt eðim
+            middle[i] =
+                Vector3.Lerp(
+                    outer[i],
+                    center,
+                    0.28f
+                );
+
+            middle[i].y =
+                baseHeight +
+                roofHeight *
+                0.68f;
+
+            // Daha yatýk üst eðim
+            top[i] =
+                Vector3.Lerp(
+                    outer[i],
+                    center,
+                    0.52f
+                );
+
+            top[i].y =
+                baseHeight +
+                roofHeight;
+        }
+
+        int[] outerIndex =
+            new int[4];
+
+        int[] middleIndex =
+            new int[4];
+
+        int[] topIndex =
+            new int[4];
+
+        for (int i = 0;
+             i < 4;
+             i++)
+        {
+            outerIndex[i] =
+                AddRoofVertex(
+                    builder,
+                    outer[i]
+                );
+
+            middleIndex[i] =
+                AddRoofVertex(
+                    builder,
+                    middle[i]
+                );
+
+            topIndex[i] =
+                AddRoofVertex(
+                    builder,
+                    top[i]
+                );
+        }
+
+        // Alt dik yüzey.
+        for (int i = 0;
+             i < 4;
+             i++)
+        {
+            int next =
+                (i + 1)
+                %
+                4;
+
+            Vector3 outward =
+                GetEdgeOutward(
+                    outer[i],
+                    outer[next]
+                );
+
+            AddQuadExpectedNormal(
+                builder,
+                builder.roofTriangles,
+                outerIndex[i],
+                outerIndex[next],
+                middleIndex[next],
+                middleIndex[i],
+                (
+                    outward +
+                    Vector3.up *
+                    0.25f
+                ).normalized
+            );
+        }
+
+        // Üst yatýk yüzey.
+        for (int i = 0;
+             i < 4;
+             i++)
+        {
+            int next =
+                (i + 1)
+                %
+                4;
+
+            Vector3 outward =
+                GetEdgeOutward(
+                    middle[i],
+                    middle[next]
+                );
+
+            AddQuadExpectedNormal(
+                builder,
+                builder.roofTriangles,
+                middleIndex[i],
+                middleIndex[next],
+                topIndex[next],
+                topIndex[i],
+                (
+                    outward +
+                    Vector3.up
+                ).normalized
+            );
+        }
+
+        // Küçük düz üst kapak.
+        AddQuadExpectedNormal(
+            builder,
+            builder.roofTriangles,
+            topIndex[0],
+            topIndex[1],
+            topIndex[2],
+            topIndex[3],
+            Vector3.up
+        );
+    }
+
+    // =========================================================
+    // ROOF HELPERS
+    // =========================================================
+
+    private void GetCanonicalRoofQuad(
+        List<Vector3> footprint,
+        out Vector3 p0,
+        out Vector3 p1,
+        out Vector3 p2,
+        out Vector3 p3)
+    {
+        Vector3 a = footprint[0];
+        Vector3 b = footprint[1];
+        Vector3 c = footprint[2];
+        Vector3 d = footprint[3];
+
+        float pairA =
+            (
+                Vector3.Distance(
+                    a,
+                    b
+                ) +
+                Vector3.Distance(
+                    c,
+                    d
+                )
+            ) *
+            0.5f;
+
+        float pairB =
+            (
+                Vector3.Distance(
+                    b,
+                    c
+                ) +
+                Vector3.Distance(
+                    d,
+                    a
+                )
+            ) *
+            0.5f;
+
+        // p0-p1 ve p2-p3 mümkün olduðunca uzun kenar.
+        if (pairA >= pairB)
+        {
+            p0 = a;
+            p1 = b;
+            p2 = c;
+            p3 = d;
+        }
+        else
+        {
+            p0 = b;
+            p1 = c;
+            p2 = d;
+            p3 = a;
+        }
+    }
+
+    private Vector3 GetEdgeOutward(
+        Vector3 a,
+        Vector3 b)
+    {
+        Vector3 direction =
+            b -
+            a;
+
+        direction.y = 0f;
+
+        if (direction.sqrMagnitude <
+            0.0001f)
+        {
+            return
+                Vector3.forward;
+        }
+
+        direction.Normalize();
+
+        return new Vector3(
+            direction.z,
+            0f,
+            -direction.x
+        );
+    }
+
+    private int AddRoofVertex(
+        MeshBuilder builder,
+        Vector3 point)
+    {
+        int index =
+            builder.vertices.Count;
+
+        builder.vertices.Add(
+            point
+        );
+
+        builder.uvs.Add(
+            new Vector2(
+                point.x *
+                0.2f,
+                point.z *
+                0.2f
+            )
+        );
+
+        return index;
+    }
+
+    private int AddFacadeVertex(
+        MeshBuilder builder,
+        Vector3 point)
+    {
+        int index =
+            builder.vertices.Count;
+
+        builder.vertices.Add(
+            point
+        );
+
+        builder.uvs.Add(
+            new Vector2(
+                point.x *
+                0.2f,
+                point.y *
+                0.2f
+            )
+        );
+
+        return index;
+    }
+
+    private void AddQuadExpectedNormal(
+        MeshBuilder builder,
+        List<int> triangles,
+        int a,
+        int b,
+        int c,
+        int d,
+        Vector3 expectedNormal)
+    {
+        AddTriangleExpectedNormal(
+            builder,
+            triangles,
+            a,
+            b,
+            c,
+            expectedNormal
+        );
+
+        AddTriangleExpectedNormal(
+            builder,
+            triangles,
+            a,
+            c,
+            d,
+            expectedNormal
+        );
+    }
+
+    private void AddTriangleExpectedNormal(
+        MeshBuilder builder,
+        List<int> triangles,
+        int a,
+        int b,
+        int c,
+        Vector3 expectedNormal)
+    {
+        Vector3 pa =
+            builder.vertices[a];
+
+        Vector3 pb =
+            builder.vertices[b];
+
+        Vector3 pc =
+            builder.vertices[c];
+
+        Vector3 normal =
+            Vector3.Cross(
+                pb - pa,
+                pc - pa
+            );
+
+        if (Vector3.Dot(
+                normal,
+                expectedNormal) < 0f)
+        {
+            int temp =
+                b;
+
+            b =
+                c;
+
+            c =
+                temp;
+        }
+
+        triangles.Add(a);
+        triangles.Add(b);
+        triangles.Add(c);
+    }
+
+    // =========================================================
+    // ROOF MATERIAL
+    // =========================================================
+
+    private int GetRoofMaterialIndex(
+        OSMWay way,
+        long osmId,
+        RoofType roofType)
+    {
+        if (roofMaterials == null ||
+            roofMaterials.Length == 0)
+        {
+            return -1;
+        }
+
+        string osmMaterial =
+            GetTagLower(
+                way,
+                "roof:material"
+            );
+
+        // =====================================================
+        // OSM MATERIAL FIRST
+        // =====================================================
+
+        if (!string.IsNullOrEmpty(
+                osmMaterial))
+        {
+            List<int> matches =
+                new List<int>();
+
+            for (int i = 0;
+                 i < roofMaterials.Length;
+                 i++)
+            {
+                Material material =
+                    roofMaterials[i];
+
+                if (material == null)
+                    continue;
+
+                if (RoofMaterialMatches(
+                        material.name,
+                        osmMaterial))
+                {
+                    matches.Add(i);
+                }
+            }
+
+            if (matches.Count > 0)
+            {
+                System.Random random =
+                    CreateStableRandom(
+                        osmId + 18901
+                    );
+
+                return
+                    matches[
+                        random.Next(
+                            0,
+                            matches.Count
+                        )
+                    ];
+            }
+        }
+
+        // =====================================================
+        // TYPE-APPROPRIATE MATERIAL
+        // =====================================================
+
+        List<int> preferred =
+            new List<int>();
+
+        for (int i = 0;
+             i < roofMaterials.Length;
+             i++)
+        {
+            Material material =
+                roofMaterials[i];
+
+            if (material == null)
+                continue;
+
+            string name =
+                material.name
+                    .ToLowerInvariant();
+
+            bool suitable;
+
+            if (roofType ==
+                RoofType.Flat)
+            {
+                suitable =
+                    name.Contains("concrete") ||
+                    name.Contains("beton") ||
+                    name.Contains("flat") ||
+                    name.Contains("membrane") ||
+                    name.Contains("gravel") ||
+                    name.Contains("metal");
+            }
+            else
+            {
+                suitable =
+                    name.Contains("tile") ||
+                    name.Contains("kiremit") ||
+                    name.Contains("slate") ||
+                    name.Contains("shingle") ||
+                    name.Contains("metal") ||
+                    name.Contains("roof");
+            }
+
+            if (suitable)
+            {
+                preferred.Add(i);
+            }
+        }
+
+        if (preferred.Count > 0)
+        {
+            System.Random random =
+                CreateStableRandom(
+                    osmId + 19001
+                );
+
+            return
+                preferred[
+                    random.Next(
+                        0,
+                        preferred.Count
+                    )
+                ];
+        }
+
+        return
+            GetStableMaterialIndex(
+                roofMaterials,
+                osmId,
+                19001
+            );
+    }
+
+    private bool RoofMaterialMatches(
+        string materialName,
+        string osmValue)
+    {
+        if (string.IsNullOrEmpty(
+                materialName))
+        {
+            return false;
+        }
+
+        string name =
+            materialName
+                .ToLowerInvariant();
+
+        if (osmValue.Contains("tile"))
+        {
+            return
+                name.Contains("tile") ||
+                name.Contains("kiremit");
+        }
+
+        if (osmValue.Contains("metal"))
+        {
+            return
+                name.Contains("metal") ||
+                name.Contains("sheet");
+        }
+
+        if (osmValue.Contains("concrete"))
+        {
+            return
+                name.Contains("concrete") ||
+                name.Contains("beton");
+        }
+
+        if (osmValue.Contains("slate"))
+        {
+            return
+                name.Contains("slate");
+        }
+
+        if (osmValue.Contains("shingle"))
+        {
+            return
+                name.Contains("shingle");
+        }
+
+        return
+            name.Contains(
+                osmValue
+            );
     }
 
     // =========================================================
@@ -2147,7 +4213,7 @@ public class OSMBuildingGenerator
 
     private int[] CreateMaterialPalette(
         Material[] materials,
-        long seedId,
+        long seed,
         int maximumVariants)
     {
         if (materials == null ||
@@ -2178,10 +4244,10 @@ public class OSMBuildingGenerator
 
         System.Random random =
             CreateStableRandom(
-                seedId
+                seed
             );
 
-        // Fisher-Yates shuffle.
+        // Shuffle
         for (int i =
                  valid.Count - 1;
              i > 0;
@@ -2209,24 +4275,19 @@ public class OSMBuildingGenerator
                 valid.Count
             );
 
-        int[] palette =
+        int[] result =
             new int[count];
 
         for (int i = 0;
              i < count;
              i++)
         {
-            palette[i] =
+            result[i] =
                 valid[i];
         }
 
-        return
-            palette;
+        return result;
     }
-
-    // =========================================================
-    // PICK MATERIAL
-    // =========================================================
 
     private int PickMaterialFromPalette(
         int[] palette,
@@ -2248,125 +4309,7 @@ public class OSMBuildingGenerator
     }
 
     // =========================================================
-    // ROOF
-    // =========================================================
-
-    private void AddRoof(
-        MeshBuilder builder,
-        List<Vector3> footprint,
-        float height)
-    {
-        List<int> triangles =
-            TriangulatePolygon(
-                footprint
-            );
-
-        if (triangles.Count < 3)
-            return;
-
-        int start =
-            builder.vertices.Count;
-
-        foreach (Vector3 point
-                 in footprint)
-        {
-            builder.vertices.Add(
-                new Vector3(
-                    point.x,
-                    height,
-                    point.z
-                )
-            );
-
-            builder.uvs.Add(
-                new Vector2(
-                    point.x *
-                    0.1f,
-                    point.z *
-                    0.1f
-                )
-            );
-        }
-
-        for (int i = 0;
-             i < triangles.Count;
-             i += 3)
-        {
-            builder.facadeTriangles.Add(
-                start +
-                triangles[i]
-            );
-
-            builder.facadeTriangles.Add(
-                start +
-                triangles[i + 2]
-            );
-
-            builder.facadeTriangles.Add(
-                start +
-                triangles[i + 1]
-            );
-        }
-    }
-
-    // =========================================================
-    // BOTTOM
-    // =========================================================
-
-    private void AddBottom(
-        MeshBuilder builder,
-        List<Vector3> footprint)
-    {
-        List<int> triangles =
-            TriangulatePolygon(
-                footprint
-            );
-
-        if (triangles.Count < 3)
-            return;
-
-        int start =
-            builder.vertices.Count;
-
-        foreach (Vector3 point
-                 in footprint)
-        {
-            builder.vertices.Add(
-                new Vector3(
-                    point.x,
-                    0f,
-                    point.z
-                )
-            );
-
-            builder.uvs.Add(
-                Vector2.zero
-            );
-        }
-
-        for (int i = 0;
-             i < triangles.Count;
-             i += 3)
-        {
-            builder.facadeTriangles.Add(
-                start +
-                triangles[i]
-            );
-
-            builder.facadeTriangles.Add(
-                start +
-                triangles[i + 1]
-            );
-
-            builder.facadeTriangles.Add(
-                start +
-                triangles[i + 2]
-            );
-        }
-    }
-
-    // =========================================================
-    // STYLE SELECT
+    // STYLE SELECTION
     // =========================================================
 
     private BuildingStyle SelectBuildingStyle(
@@ -2422,10 +4365,6 @@ public class OSMBuildingGenerator
                 100
             );
 
-        // =====================================================
-        // OFFICE
-        // =====================================================
-
         if (officeLike)
         {
             if (floorCount >= 6 &&
@@ -2439,10 +4378,6 @@ public class OSMBuildingGenerator
                 OfficeStyle();
         }
 
-        // =====================================================
-        // RETAIL
-        // =====================================================
-
         if (retail)
         {
             if (floorCount >= 6 &&
@@ -2455,10 +4390,6 @@ public class OSMBuildingGenerator
             return
                 MixedUseStyle();
         }
-
-        // =====================================================
-        // RESIDENTIAL
-        // =====================================================
 
         if (residential)
         {
@@ -2477,10 +4408,6 @@ public class OSMBuildingGenerator
             return
                 MixedUseStyle();
         }
-
-        // =====================================================
-        // GENERIC
-        // =====================================================
 
         if (floorCount >= 7 &&
             roll < 18)
@@ -2512,307 +4439,166 @@ public class OSMBuildingGenerator
     }
 
     // =========================================================
-    // CLASSIC
+    // STYLES
     // =========================================================
 
     private BuildingStyle ClassicResidentialStyle()
     {
         return new BuildingStyle
         {
-            styleName =
-                "ClassicResidential",
+            styleName = "ClassicResidential",
 
             archetype =
                 BuildingArchetype.ClassicResidential,
 
-            targetBayWidth =
-                2.20f,
+            targetBayWidth = 2.2f,
 
-            windowWidth =
-                1.00f,
+            windowWidth = 1.0f,
+            windowHeight = 1.35f,
+            windowBottom = 0.95f,
+            windowSideMargin = 0.26f,
 
-            windowHeight =
-                1.35f,
+            shopHeight = 2.05f,
+            shopSideMargin = 0.20f,
+            shopChance = 0.55f,
 
-            windowBottom =
-                0.95f,
+            entranceWidth = 1.25f,
+            entranceHeight = 2.2f,
 
-            windowSideMargin =
-                0.26f,
+            allowBalcony = true,
+            balconyChance = 0.42f,
+            balconyMaxWidth = 2.0f,
 
-            shopHeight =
-                2.05f,
-
-            shopSideMargin =
-                0.20f,
-
-            shopChance =
-                0.55f,
-
-            entranceWidth =
-                1.25f,
-
-            entranceHeight =
-                2.20f,
-
-            allowBalcony =
-                true,
-
-            balconyChance =
-                0.42f,
-
-            balconyMaxWidth =
-                2.00f,
-
-            fullGlassUpperFloors =
-                false,
-
-            fullGlassGroundFloor =
-                false
+            fullGlassUpperFloors = false,
+            fullGlassGroundFloor = false
         };
     }
-
-    // =========================================================
-    // MODERN
-    // =========================================================
 
     private BuildingStyle ModernResidentialStyle()
     {
         return new BuildingStyle
         {
-            styleName =
-                "ModernResidential",
+            styleName = "ModernResidential",
 
             archetype =
                 BuildingArchetype.ModernResidential,
 
-            targetBayWidth =
-                2.75f,
+            targetBayWidth = 2.75f,
 
-            windowWidth =
-                1.45f,
+            windowWidth = 1.45f,
+            windowHeight = 1.55f,
+            windowBottom = 0.78f,
+            windowSideMargin = 0.24f,
 
-            windowHeight =
-                1.55f,
+            shopHeight = 2.15f,
+            shopSideMargin = 0.18f,
+            shopChance = 0.62f,
 
-            windowBottom =
-                0.78f,
+            entranceWidth = 1.4f,
+            entranceHeight = 2.3f,
 
-            windowSideMargin =
-                0.24f,
+            allowBalcony = true,
+            balconyChance = 0.26f,
+            balconyMaxWidth = 2.2f,
 
-            shopHeight =
-                2.15f,
-
-            shopSideMargin =
-                0.18f,
-
-            shopChance =
-                0.62f,
-
-            entranceWidth =
-                1.40f,
-
-            entranceHeight =
-                2.30f,
-
-            allowBalcony =
-                true,
-
-            balconyChance =
-                0.26f,
-
-            balconyMaxWidth =
-                2.20f,
-
-            fullGlassUpperFloors =
-                false,
-
-            fullGlassGroundFloor =
-                false
+            fullGlassUpperFloors = false,
+            fullGlassGroundFloor = false
         };
     }
-
-    // =========================================================
-    // MIXED USE
-    // =========================================================
 
     private BuildingStyle MixedUseStyle()
     {
         return new BuildingStyle
         {
-            styleName =
-                "MixedUse",
+            styleName = "MixedUse",
 
             archetype =
                 BuildingArchetype.MixedUse,
 
-            targetBayWidth =
-                2.90f,
+            targetBayWidth = 2.9f,
 
-            windowWidth =
-                1.35f,
+            windowWidth = 1.35f,
+            windowHeight = 1.55f,
+            windowBottom = 0.75f,
+            windowSideMargin = 0.22f,
 
-            windowHeight =
-                1.55f,
+            shopHeight = 2.3f,
+            shopSideMargin = 0.15f,
+            shopChance = 0.88f,
 
-            windowBottom =
-                0.75f,
+            entranceWidth = 1.45f,
+            entranceHeight = 2.35f,
 
-            windowSideMargin =
-                0.22f,
+            allowBalcony = false,
+            balconyChance = 0f,
+            balconyMaxWidth = 0f,
 
-            shopHeight =
-                2.30f,
-
-            shopSideMargin =
-                0.15f,
-
-            shopChance =
-                0.88f,
-
-            entranceWidth =
-                1.45f,
-
-            entranceHeight =
-                2.35f,
-
-            allowBalcony =
-                false,
-
-            balconyChance =
-                0f,
-
-            balconyMaxWidth =
-                0f,
-
-            fullGlassUpperFloors =
-                false,
-
-            fullGlassGroundFloor =
-                false
+            fullGlassUpperFloors = false,
+            fullGlassGroundFloor = false
         };
     }
-
-    // =========================================================
-    // OFFICE
-    // =========================================================
 
     private BuildingStyle OfficeStyle()
     {
         return new BuildingStyle
         {
-            styleName =
-                "Office",
+            styleName = "Office",
 
             archetype =
                 BuildingArchetype.Office,
 
-            targetBayWidth =
-                3.10f,
+            targetBayWidth = 3.1f,
 
-            windowWidth =
-                1.80f,
+            windowWidth = 1.8f,
+            windowHeight = 1.65f,
+            windowBottom = 0.7f,
+            windowSideMargin = 0.18f,
 
-            windowHeight =
-                1.65f,
+            shopHeight = 2.35f,
+            shopSideMargin = 0.15f,
+            shopChance = 0.5f,
 
-            windowBottom =
-                0.70f,
+            entranceWidth = 1.6f,
+            entranceHeight = 2.45f,
 
-            windowSideMargin =
-                0.18f,
+            allowBalcony = false,
+            balconyChance = 0f,
+            balconyMaxWidth = 0f,
 
-            shopHeight =
-                2.35f,
-
-            shopSideMargin =
-                0.15f,
-
-            shopChance =
-                0.50f,
-
-            entranceWidth =
-                1.60f,
-
-            entranceHeight =
-                2.45f,
-
-            allowBalcony =
-                false,
-
-            balconyChance =
-                0f,
-
-            balconyMaxWidth =
-                0f,
-
-            fullGlassUpperFloors =
-                false,
-
-            fullGlassGroundFloor =
-                false
+            fullGlassUpperFloors = false,
+            fullGlassGroundFloor = false
         };
     }
-
-    // =========================================================
-    // GLASS PLAZA
-    // =========================================================
 
     private BuildingStyle GlassPlazaStyle()
     {
         return new BuildingStyle
         {
-            styleName =
-                "GlassPlaza",
+            styleName = "GlassPlaza",
 
             archetype =
                 BuildingArchetype.GlassPlaza,
 
-            targetBayWidth =
-                3.30f,
+            targetBayWidth = 3.3f,
 
-            windowWidth =
-                2.40f,
+            windowWidth = 2.4f,
+            windowHeight = 2.5f,
+            windowBottom = 0.18f,
+            windowSideMargin = 0.1f,
 
-            windowHeight =
-                2.50f,
+            shopHeight = 2.45f,
+            shopSideMargin = 0.08f,
+            shopChance = 0.45f,
 
-            windowBottom =
-                0.18f,
+            entranceWidth = 1.9f,
+            entranceHeight = 2.55f,
 
-            windowSideMargin =
-                0.10f,
+            allowBalcony = false,
+            balconyChance = 0f,
+            balconyMaxWidth = 0f,
 
-            shopHeight =
-                2.45f,
-
-            shopSideMargin =
-                0.08f,
-
-            shopChance =
-                0.45f,
-
-            entranceWidth =
-                1.90f,
-
-            entranceHeight =
-                2.55f,
-
-            allowBalcony =
-                false,
-
-            balconyChance =
-                0f,
-
-            balconyMaxWidth =
-                0f,
-
-            fullGlassUpperFloors =
-                true,
-
-            fullGlassGroundFloor =
-                true
+            fullGlassUpperFloors = true,
+            fullGlassGroundFloor = true
         };
     }
 
@@ -2828,10 +4614,7 @@ public class OSMBuildingGenerator
         floorCount = 0;
         height = 0f;
 
-        // =====================================================
-        // LEVELS
-        // =====================================================
-
+        // Levels
         string levels =
             way.GetTag(
                 "building:levels"
@@ -2844,52 +4627,33 @@ public class OSMBuildingGenerator
                     levels,
                     NumberStyles.Integer,
                     CultureInfo.InvariantCulture,
-                    out int value))
+                    out int parsedLevels))
             {
                 floorCount =
                     Mathf.Clamp(
-                        value,
+                        parsedLevels,
                         1,
                         50
                     );
             }
         }
 
-        // =====================================================
-        // HEIGHT
-        // =====================================================
-
-        string heightString =
+        // Height
+        string heightTag =
             way.GetTag(
                 "height"
             );
 
-        if (!string.IsNullOrWhiteSpace(
-                heightString))
+        if (TryParseMeters(
+                heightTag,
+                out float parsedHeight))
         {
-            heightString =
-                heightString
-                    .ToLowerInvariant()
-                    .Replace("meters", "")
-                    .Replace("meter", "")
-                    .Replace("metres", "")
-                    .Replace("metre", "")
-                    .Replace("m", "")
-                    .Trim();
-
-            if (float.TryParse(
-                    heightString,
-                    NumberStyles.Float,
-                    CultureInfo.InvariantCulture,
-                    out float value))
-            {
-                height =
-                    Mathf.Clamp(
-                        value,
-                        2.5f,
-                        300f
-                    );
-            }
+            height =
+                Mathf.Clamp(
+                    parsedHeight,
+                    2.5f,
+                    300f
+                );
         }
 
         if (floorCount > 0 &&
@@ -2938,8 +4702,39 @@ public class OSMBuildingGenerator
             FloorHeight;
     }
 
+    private bool TryParseMeters(
+        string value,
+        out float meters)
+    {
+        meters = 0f;
+
+        if (string.IsNullOrWhiteSpace(
+                value))
+        {
+            return false;
+        }
+
+        string cleaned =
+            value
+                .ToLowerInvariant()
+                .Replace("meters", "")
+                .Replace("meter", "")
+                .Replace("metres", "")
+                .Replace("metre", "")
+                .Replace("m", "")
+                .Trim();
+
+        return
+            float.TryParse(
+                cleaned,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out meters
+            );
+    }
+
     // =========================================================
-    // STABLE MATERIAL INDEX
+    // MATERIAL
     // =========================================================
 
     private int GetStableMaterialIndex(
@@ -2984,18 +4779,12 @@ public class OSMBuildingGenerator
             ];
     }
 
-    // =========================================================
-    // GET MATERIAL
-    // =========================================================
-
     private Material GetMaterial(
         Material[] materials,
         int index)
     {
-        if (materials == null)
-            return null;
-
-        if (index < 0 ||
+        if (materials == null ||
+            index < 0 ||
             index >= materials.Length)
         {
             return null;
@@ -3006,7 +4795,7 @@ public class OSMBuildingGenerator
     }
 
     // =========================================================
-    // CLEAN POLYGON
+    // POLYGON CLEAN
     // =========================================================
 
     private List<Vector3> CleanPolygon(
@@ -3053,19 +4842,19 @@ public class OSMBuildingGenerator
             );
         }
 
-        // =====================================================
-        // COLLINEAR CLEAN
-        // =====================================================
+        // Collinear / useless points.
+        bool removed =
+            true;
 
-        bool removed = true;
-
-        int safety = 100;
+        int safety =
+            100;
 
         while (removed &&
                result.Count > 3 &&
                safety-- > 0)
         {
-            removed = false;
+            removed =
+                false;
 
             for (int i = 0;
                  i < result.Count;
@@ -3107,14 +4896,13 @@ public class OSMBuildingGenerator
                         current.z
                     );
 
-                if (a.sqrMagnitude <
-                    0.001f ||
-                    b.sqrMagnitude <
-                    0.001f)
+                if (a.sqrMagnitude < 0.001f ||
+                    b.sqrMagnitude < 0.001f)
                 {
                     result.RemoveAt(i);
 
-                    removed = true;
+                    removed =
+                        true;
 
                     break;
                 }
@@ -3134,15 +4922,15 @@ public class OSMBuildingGenerator
                 {
                     result.RemoveAt(i);
 
-                    removed = true;
+                    removed =
+                        true;
 
                     break;
                 }
             }
         }
 
-        return
-            result;
+        return result;
     }
 
     // =========================================================
@@ -3241,25 +5029,27 @@ public class OSMBuildingGenerator
                      j < remaining.Count;
                      j++)
                 {
-                    int test =
+                    int testIndex =
                         remaining[j];
 
-                    if (test == previous ||
-                        test == current ||
-                        test == next)
+                    if (testIndex == previous ||
+                        testIndex == current ||
+                        testIndex == next)
                     {
                         continue;
                     }
 
                     if (PointInTriangle(
                             ToXZ(
-                                points[test]
+                                points[testIndex]
                             ),
                             a,
                             b,
                             c))
                     {
-                        containsPoint = true;
+                        containsPoint =
+                            true;
+
                         break;
                     }
                 }
@@ -3273,7 +5063,9 @@ public class OSMBuildingGenerator
 
                 remaining.RemoveAt(i);
 
-                earFound = true;
+                earFound =
+                    true;
+
                 break;
             }
 
@@ -3299,12 +5091,11 @@ public class OSMBuildingGenerator
             );
         }
 
-        return
-            triangles;
+        return triangles;
     }
 
     // =========================================================
-    // GEOMETRY HELPERS
+    // GEOMETRY
     // =========================================================
 
     private bool IsConvex(
@@ -3316,8 +5107,7 @@ public class OSMBuildingGenerator
             Cross2D(
                 b - a,
                 c - b
-            )
-            >
+            ) >
             0.00001f;
     }
 
@@ -3378,7 +5168,8 @@ public class OSMBuildingGenerator
     private float SignedArea(
         List<Vector3> points)
     {
-        float area = 0f;
+        float area =
+            0f;
 
         for (int i = 0;
              i < points.Count;
@@ -3407,15 +5198,17 @@ public class OSMBuildingGenerator
     }
 
     // =========================================================
-    // LONGEST EDGE
+    // EDGE
     // =========================================================
 
     private int FindLongestEdge(
         List<Vector3> footprint)
     {
-        int result = 0;
+        int result =
+            0;
 
-        float longest = -1f;
+        float longest =
+            -1f;
 
         for (int i = 0;
              i < footprint.Count;
@@ -3440,13 +5233,15 @@ public class OSMBuildingGenerator
             if (length >
                 longest)
             {
-                longest = length;
-                result = i;
+                longest =
+                    length;
+
+                result =
+                    i;
             }
         }
 
-        return
-            result;
+        return result;
     }
 
     // =========================================================
@@ -3468,6 +5263,17 @@ public class OSMBuildingGenerator
             new System.Random(
                 seed
             );
+    }
+
+    private float RandomRange(
+        System.Random random,
+        float min,
+        float max)
+    {
+        return
+            min +
+            (float)random.NextDouble() *
+            (max - min);
     }
 
     // =========================================================
@@ -3512,6 +5318,56 @@ public class OSMBuildingGenerator
     }
 
     // =========================================================
+    // BOTTOM
+    // =========================================================
+
+    private void AddBottom(
+        MeshBuilder builder,
+        List<Vector3> footprint)
+    {
+        List<int> triangles =
+            TriangulatePolygon(
+                footprint
+            );
+
+        if (triangles.Count < 3)
+            return;
+
+        int start =
+            builder.vertices.Count;
+
+        foreach (Vector3 point
+                 in footprint)
+        {
+            builder.vertices.Add(
+                new Vector3(
+                    point.x,
+                    0f,
+                    point.z
+                )
+            );
+
+            builder.uvs.Add(
+                Vector2.zero
+            );
+        }
+
+        for (int i = 0;
+             i < triangles.Count;
+             i += 3)
+        {
+            AddTriangleExpectedNormal(
+                builder,
+                builder.facadeTriangles,
+                start + triangles[i],
+                start + triangles[i + 1],
+                start + triangles[i + 2],
+                Vector3.down
+            );
+        }
+    }
+
+    // =========================================================
     // DESTROY
     // =========================================================
 
@@ -3547,20 +5403,19 @@ public class OSMBuildingGenerator
         public readonly List<Vector2> uvs =
             new List<Vector2>();
 
-        // Material 0
         public readonly List<int> facadeTriangles =
             new List<int>();
 
-        // Material 1
         public readonly List<int> glassTriangles =
             new List<int>();
 
-        // Shop material index -> triangles
+        public readonly List<int> roofTriangles =
+            new List<int>();
+
         public readonly Dictionary<int, List<int>>
             shopTriangles =
                 new Dictionary<int, List<int>>();
 
-        // Balcony material index -> triangles
         public readonly Dictionary<int, List<int>>
             balconyTriangles =
                 new Dictionary<int, List<int>>();
@@ -3572,8 +5427,7 @@ public class OSMBuildingGenerator
 // BUILDING INFO
 // =============================================================
 
-public class BuildingInfo :
-    MonoBehaviour
+public class BuildingInfo : MonoBehaviour
 {
     public long osmId;
 
@@ -3583,9 +5437,15 @@ public class BuildingInfo :
 
     public string styleName;
 
+    public string roofType;
+
+    public float roofHeight;
+
     public int facadeMaterialIndex = -1;
 
     public int glassMaterialIndex = -1;
+
+    public int roofMaterialIndex = -1;
 
     [HideInInspector]
     public Vector3[] footprint;
