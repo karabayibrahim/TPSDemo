@@ -12,95 +12,120 @@ public class IstanbulCityGenerator : MonoBehaviour
     private TextAsset osmFile;
 
     // =========================================================
+    // TERRAIN
+    // =========================================================
+
+    [Header("Auto Terrain")]
+
+    [SerializeField]
+    private bool generateTerrain =
+        true;
+
+    [SerializeField]
+    private OSMAutoTerrainGenerator
+        autoTerrainGenerator;
+
+    [SerializeField]
+    private OSMTerrainElevation
+        terrainElevation;
+
+    [SerializeField]
+    private OSMRoadTerrainConformer
+        roadTerrainConformer;
+
+    // =========================================================
     // ROAD
     // =========================================================
 
     [Header("Road")]
 
     [SerializeField]
-    private Material roadMaterial;
-
-    // =========================================================
-    // BUILDING MATERIALS
-    // =========================================================
-
-    [Header("Building - Facade Materials")]
-
-    [Tooltip(
-        "Her bina bu listeden bir dýþ cephe materyali seçer."
-    )]
-    [SerializeField]
-    private Material[] buildingMaterials;
-
-    // =========================================================
-    // GLASS
-    // =========================================================
-
-    [Header("Building - Glass Materials")]
-
-    [Tooltip(
-        "Her bina bu listeden bir cam materyali seçer."
-    )]
-    [SerializeField]
-    private Material[] glassMaterials;
-
-    // =========================================================
-    // SHOP
-    // =========================================================
-
-    [Header("Building - Shop Materials")]
-
-    [Tooltip(
-        "Dükkanlarda kullanýlacak materyaller. " +
-        "Bir bina maksimum 3 farklý shop materyali kullanýr."
-    )]
-    [SerializeField]
-    private Material[] shopMaterials;
-
-    // =========================================================
-    // BALCONY
-    // =========================================================
-
-    [Header("Building - Balcony Materials")]
-
-    [Tooltip(
-        "Balkonlarda kullanýlacak materyaller. " +
-        "Bir bina maksimum 2 farklý balkon materyali kullanýr."
-    )]
-    [SerializeField]
-    private Material[] balconyMaterials;
-
-    // =========================================================
-    // ROOF
-    // =========================================================
-
-    [Header("Building - Roof Materials")]
-
-    [Tooltip(
-        "Düz ve eðimli çatýlarda kullanýlacak materyaller."
-    )]
-    [SerializeField]
-    private Material[] roofMaterials;
-
-    // =========================================================
-    // GENERATION
-    // =========================================================
-
-    [Header("Generation")]
-
-    [SerializeField]
     private bool generateRoads =
         true;
+
+    [SerializeField]
+    private Material roadMaterial;
+
+    [SerializeField]
+    private Material[] medianMaterials;
+
+    // =========================================================
+    // INTERSECTION
+    // =========================================================
+
+    [Header("Intersection")]
+
+    [SerializeField]
+    private bool generateIntersections =
+        true;
+
+    [SerializeField]
+    private Material intersectionMaterial;
+
+    // =========================================================
+    // SIDEWALK
+    // =========================================================
+
+    [Header("Sidewalk")]
+
+    [SerializeField]
+    private bool generateSidewalks =
+        true;
+
+    [SerializeField]
+    private Material[] sidewalkMaterials;
+
+    [SerializeField]
+    private Material[] curbMaterials;
+
+    [SerializeField]
+    private Material[] sidewalkBufferMaterials;
+
+    // =========================================================
+    // BUILDING
+    // =========================================================
+
+    [Header("Buildings")]
 
     [SerializeField]
     private bool generateBuildings =
         true;
 
+    [Header("Building - Facade Materials")]
+
+    [SerializeField]
+    private Material[] buildingMaterials;
+
+    [Header("Building - Glass Materials")]
+
+    [SerializeField]
+    private Material[] glassMaterials;
+
+    [Header("Building - Shop Materials")]
+
+    [SerializeField]
+    private Material[] shopMaterials;
+
+    [Header("Building - Balcony Materials")]
+
+    [SerializeField]
+    private Material[] balconyMaterials;
+
+    [Header("Building - Roof Materials")]
+
+    [SerializeField]
+    private Material[] roofMaterials;
+
     // =========================================================
-    // PARENTS
+    // ROOTS
     // =========================================================
 
     private Transform roadsParent;
+
+    private Transform intersectionsParent;
+
+    private Transform sidewalksParent;
+
     private Transform buildingsParent;
 
     // =========================================================
@@ -119,7 +144,11 @@ public class IstanbulCityGenerator : MonoBehaviour
             return;
         }
 
-        Clear();
+        ClearCityObjects();
+
+        // =====================================================
+        // PARSE
+        // =====================================================
 
         OSMMapData map =
             OSMParser.Parse(
@@ -135,42 +164,224 @@ public class IstanbulCityGenerator : MonoBehaviour
             return;
         }
 
+        // =====================================================
+        // COMPONENTS
+        // =====================================================
+
+        EnsureTerrainComponents();
+
+        // =====================================================
+        // NETWORK FIRST
+        // =====================================================
+
+        OSMRoadNetworkData roadNetwork =
+            OSMRoadNetworkData.Build(
+                map
+            );
+
+        OSMRoadEnvironmentData roadEnvironment =
+            OSMRoadEnvironmentData.Build(
+                map
+            );
+
+        // =====================================================
+        // GENERATE TERRAIN
+        // =====================================================
+
+        Terrain generatedTerrain =
+            null;
+
+        if (generateTerrain)
+        {
+            generatedTerrain =
+                autoTerrainGenerator
+                    .GenerateTerrain(
+                        map
+                    );
+
+            if (generatedTerrain != null)
+            {
+                terrainElevation.SetTerrain(
+                    generatedTerrain
+                );
+            }
+        }
+        else
+        {
+            generatedTerrain =
+                terrainElevation
+                    .AssignedTerrain;
+        }
+
+        terrainElevation.Configure(
+            transform
+        );
+
+        // =====================================================
+        // CONFORM TERRAIN TO ROAD NETWORK
+        //
+        // En kritik sýra:
+        // Terrain -> conform -> road mesh
+        // =====================================================
+
+        if (generatedTerrain != null &&
+            roadTerrainConformer != null)
+        {
+            roadTerrainConformer.Conform(
+                map,
+                roadNetwork,
+                transform,
+                generatedTerrain
+            );
+
+            /*
+             * Terrain deðiþti.
+             * elevation ayný Terrain referansýný kullanýyor.
+             */
+        }
+
+        // =====================================================
+        // PARENTS
+        // =====================================================
+
         CreateParents();
+
+        // =====================================================
+        // GENERATORS
+        // =====================================================
 
         OSMRoadGenerator roadGenerator =
             new OSMRoadGenerator(
                 roadsParent,
-                roadMaterial
+                roadMaterial,
+                medianMaterials,
+                terrainElevation,
+                roadNetwork
             );
 
-        OSMBuildingGenerator buildingGenerator =
-            new OSMBuildingGenerator(
-                buildingsParent,
-                buildingMaterials,
-                glassMaterials,
-                shopMaterials,
-                balconyMaterials,
-                roofMaterials
-            );
+        Material finalIntersectionMaterial =
+            intersectionMaterial != null
+                ? intersectionMaterial
+                : roadMaterial;
 
-        foreach (OSMWay way
-                 in map.ways)
+        OSMIntersectionGenerator
+            intersectionGenerator =
+                new OSMIntersectionGenerator(
+                    intersectionsParent,
+                    finalIntersectionMaterial,
+                    terrainElevation,
+                    roadNetwork
+                );
+
+        OSMSidewalkGenerator
+            sidewalkGenerator =
+                new OSMSidewalkGenerator(
+                    sidewalksParent,
+                    sidewalkMaterials,
+                    curbMaterials,
+                    sidewalkBufferMaterials,
+                    terrainElevation,
+                    roadNetwork,
+                    roadEnvironment
+                );
+
+        OSMBuildingGenerator
+            buildingGenerator =
+                new OSMBuildingGenerator(
+                    buildingsParent,
+                    buildingMaterials,
+                    glassMaterials,
+                    shopMaterials,
+                    balconyMaterials,
+                    roofMaterials
+                );
+
+        // =====================================================
+        // ROADS
+        // =====================================================
+
+        if (generateRoads)
         {
-            if (generateRoads)
+            foreach (OSMWay way
+                     in map.ways)
             {
+                if (way == null ||
+                    !OSMRoadMetrics.IsRoad(
+                        way
+                    ))
+                {
+                    continue;
+                }
+
                 roadGenerator.Generate(
                     map,
                     way
                 );
             }
+        }
 
-            if (generateBuildings)
+        // =====================================================
+        // INTERSECTIONS
+        // =====================================================
+
+        if (generateRoads &&
+            generateIntersections)
+        {
+            intersectionGenerator.Generate(
+                map
+            );
+        }
+
+        // =====================================================
+        // SIDEWALKS
+        // =====================================================
+
+        if (generateSidewalks)
+        {
+            foreach (OSMWay way
+                     in map.ways)
             {
+                if (way == null ||
+                    !OSMRoadMetrics.IsRoad(
+                        way
+                    ))
+                {
+                    continue;
+                }
+
+                sidewalkGenerator.Generate(
+                    map,
+                    way
+                );
+            }
+        }
+
+        // =====================================================
+        // BUILDINGS
+        // =====================================================
+
+        if (generateBuildings)
+        {
+            foreach (OSMWay way
+                     in map.ways)
+            {
+                if (way == null ||
+                    !way.HasTag(
+                        "building"
+                    ))
+                {
+                    continue;
+                }
+
                 buildingGenerator.Generate(
                     map,
                     way
                 );
             }
+
+            terrainElevation.PlaceBuildings(
+                buildingsParent
+            );
         }
 
         Debug.Log(
@@ -179,36 +390,127 @@ public class IstanbulCityGenerator : MonoBehaviour
     }
 
     // =========================================================
-    // CREATE PARENTS
+    // COMPONENTS
+    // =========================================================
+
+    private void EnsureTerrainComponents()
+    {
+        if (autoTerrainGenerator == null)
+        {
+            autoTerrainGenerator =
+                GetComponent<
+                    OSMAutoTerrainGenerator
+                >();
+        }
+
+        if (autoTerrainGenerator == null)
+        {
+            autoTerrainGenerator =
+                gameObject.AddComponent<
+                    OSMAutoTerrainGenerator
+                >();
+        }
+
+        // =====================================================
+
+        if (terrainElevation == null)
+        {
+            terrainElevation =
+                GetComponent<
+                    OSMTerrainElevation
+                >();
+        }
+
+        if (terrainElevation == null)
+        {
+            terrainElevation =
+                gameObject.AddComponent<
+                    OSMTerrainElevation
+                >();
+        }
+
+        // =====================================================
+
+        if (roadTerrainConformer == null)
+        {
+            roadTerrainConformer =
+                GetComponent<
+                    OSMRoadTerrainConformer
+                >();
+        }
+
+        if (roadTerrainConformer == null)
+        {
+            roadTerrainConformer =
+                gameObject.AddComponent<
+                    OSMRoadTerrainConformer
+                >();
+        }
+    }
+
+    // =========================================================
+    // PARENTS
     // =========================================================
 
     private void CreateParents()
     {
-        GameObject roadsObject =
+        GameObject roads =
             new GameObject(
                 "Roads"
             );
 
-        roadsObject.transform.SetParent(
+        roads.transform.SetParent(
             transform,
             false
         );
 
         roadsParent =
-            roadsObject.transform;
+            roads.transform;
 
-        GameObject buildingsObject =
+        // =====================================================
+
+        GameObject intersections =
+            new GameObject(
+                "Intersections"
+            );
+
+        intersections.transform.SetParent(
+            transform,
+            false
+        );
+
+        intersectionsParent =
+            intersections.transform;
+
+        // =====================================================
+
+        GameObject sidewalks =
+            new GameObject(
+                "Sidewalks"
+            );
+
+        sidewalks.transform.SetParent(
+            transform,
+            false
+        );
+
+        sidewalksParent =
+            sidewalks.transform;
+
+        // =====================================================
+
+        GameObject buildings =
             new GameObject(
                 "Buildings"
             );
 
-        buildingsObject.transform.SetParent(
+        buildings.transform.SetParent(
             transform,
             false
         );
 
         buildingsParent =
-            buildingsObject.transform;
+            buildings.transform;
     }
 
     // =========================================================
@@ -218,54 +520,63 @@ public class IstanbulCityGenerator : MonoBehaviour
     [ContextMenu("Clear Istanbul")]
     public void Clear()
     {
-        Transform roads =
-            transform.Find(
-                "Roads"
-            );
+        ClearCityObjects();
 
-        Transform buildings =
-            transform.Find(
-                "Buildings"
-            );
-
-        if (roads != null)
+        if (autoTerrainGenerator == null)
         {
-            DestroyGeneratedObject(
-                roads.gameObject
-            );
+            autoTerrainGenerator =
+                GetComponent<
+                    OSMAutoTerrainGenerator
+                >();
         }
 
-        if (buildings != null)
+        if (autoTerrainGenerator != null)
         {
-            DestroyGeneratedObject(
-                buildings.gameObject
-            );
+            autoTerrainGenerator
+                .ClearGeneratedTerrain();
         }
+    }
+
+    private void ClearCityObjects()
+    {
+        DestroyChild("Roads");
+
+        DestroyChild("Intersections");
+
+        DestroyChild("Sidewalks");
+
+        DestroyChild("Buildings");
 
         roadsParent = null;
+
+        intersectionsParent = null;
+
+        sidewalksParent = null;
+
         buildingsParent = null;
     }
 
-    // =========================================================
-    // DESTROY
-    // =========================================================
-
-    private void DestroyGeneratedObject(
-        GameObject obj)
+    private void DestroyChild(
+        string name)
     {
-        if (obj == null)
+        Transform child =
+            transform.Find(
+                name
+            );
+
+        if (child == null)
             return;
 
         if (Application.isPlaying)
         {
             Destroy(
-                obj
+                child.gameObject
             );
         }
         else
         {
             DestroyImmediate(
-                obj
+                child.gameObject
             );
         }
     }
